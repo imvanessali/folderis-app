@@ -1,0 +1,50 @@
+# macOS and editor state
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Local secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+*.p12
+*.pem
+*.key
+*.mobileprovision
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Swift and Xcode build products
+.build/
+.swiftpm/
+.xcbuild*/
+DerivedData/
+*.xcarchive/
+*.app/
+xcuserdata/
+*.xcuserstate
+
+# .NET build products
+**/bin/
+**/obj/
+win-explorer-sidebar/.setup-build/
+win-explorer-sidebar/runtime-cache/
+win-explorer-sidebar/src/Setup/payload.zip
+
+# Distribution artifacts are rebuilt from source
+**/dist/
+*.dmg
+*.exe
+
+# Logs and temporary files
+*.log
+*.tmp
+*.partial

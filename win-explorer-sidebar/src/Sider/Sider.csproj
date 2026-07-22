@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <!-- 托盘 NotifyIcon 来自 WinForms -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 允许在 macOS/Linux 上交叉编译（真机运行仍需 Windows） -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>Folderis</AssemblyName>
+    <RootNamespace>Sider</RootNamespace>
+    <ApplicationIcon>Assets/app.ico</ApplicationIcon>
+    <Version>1.1.720.1</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.720.1</FileVersion>
+    <InformationalVersion>1.1.720.1+20260720.1</InformationalVersion>
+  </PropertyGroup>
+  <!-- Lite 变体：dotnet build -p:Lite=true → 仅 DeepSeek Key -->
+  <PropertyGroup Condition="'$(Lite)' == 'true'">
+    <DefineConstants>$(DefineConstants);MVP_DEEPSEEK</DefineConstants>
+    <AssemblyName>Folderis Lite</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- 技能工具箱与 macOS 版共用同一份源文件，编译期内嵌，首用时释放到运行时目录 -->
+    <EmbeddedResource Include="../../../01-finder-sidebar/skills/skills.py" LogicalName="skills.py" />
+    <EmbeddedResource Include="../../../01-finder-sidebar/skills/catalog.txt" LogicalName="catalog.txt" />
+    <Resource Include="Assets/app.png" />
+    <!-- WinForms 只用于托盘 NotifyIcon，全限定调用；去掉隐式 using 避免与 WPF 类型撞名 -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+</Project>

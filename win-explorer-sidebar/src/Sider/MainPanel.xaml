@@ -1,0 +1,115 @@
+<Window x:Class="Sider.MainPanel"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Sider"
+        Title="Folderis" Width="340" Height="700"
+        WindowStyle="None" ResizeMode="NoResize" ShowInTaskbar="False"
+        AllowsTransparency="True" Background="Transparent" ShowActivated="False">
+    <Window.Resources>
+        <!-- Win11 原生图标字体 + 圆形悬停态（对齐资源管理器工具栏按钮观感） -->
+        <Style x:Key="IconButton" TargetType="Button">
+            <Setter Property="Width" Value="32"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Foreground" Value="#444"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bg" Background="{TemplateBinding Background}" CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bg" Property="Background" Value="#14000000"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bg" Property="Background" Value="#22000000"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Border Background="#FAFAFA" CornerRadius="8" BorderBrush="#22000000" BorderThickness="1">
+        <DockPanel Margin="10">
+            <DockPanel DockPanel.Dock="Top" Height="40">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <local:SelectableText x:Name="BrandTitle" Text="Folderis" FontSize="18" FontWeight="SemiBold"
+                                          VerticalAlignment="Center"/>
+                </StackPanel>
+                <StackPanel x:Name="MainToolbar" Orientation="Horizontal" HorizontalAlignment="Right" DockPanel.Dock="Right">
+                    <Button x:Name="MinimizeButton" Content="&#xE921;" Style="{StaticResource IconButton}"
+                            Margin="0,0,2,0" Click="OnMinimizeClick" ToolTip="收起面板"/>
+                    <Button x:Name="NewChatButton" Content="&#xE70F;" Style="{StaticResource IconButton}"
+                            Margin="0,0,2,0" Click="OnNewChatClick" ToolTip="新建对话"/>
+                    <Button x:Name="HistoryButton" Content="&#xE81C;" Style="{StaticResource IconButton}"
+                            Margin="0,0,2,0" Click="OnHistoryClick" ToolTip="历史对话"/>
+                    <Button x:Name="SettingsButton" Content="&#xE713;" Style="{StaticResource IconButton}"
+                            Click="OnSettingsClick"/>
+                </StackPanel>
+                <Button x:Name="DoneButton" DockPanel.Dock="Right" Visibility="Collapsed"
+                        Content="完成" MinWidth="58" Height="30" Padding="12,0"
+                        Click="OnDoneClick"/>
+            </DockPanel>
+
+            <local:SelectableText x:Name="ContextLabel" DockPanel.Dock="Top"
+                                  Foreground="Gray" FontSize="11" Margin="0,0,0,4"
+                                  TextWrapping="Wrap"/>
+            <ScrollViewer DockPanel.Dock="Top" HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto" MaxHeight="132" Margin="0,0,0,6"
+                          x:Name="ChipsScroll" Visibility="Collapsed">
+                <StackPanel x:Name="AttachChips" Orientation="Vertical"/>
+            </ScrollViewer>
+
+            <Grid x:Name="InputArea" DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="InputBox" MinHeight="40" MaxHeight="120"
+                         TextWrapping="Wrap" AcceptsReturn="False"
+                         VerticalContentAlignment="Center" Padding="10,8"/>
+                <Button Grid.Column="1" x:Name="SendButton" Content="&#xE74A;"
+                        Width="34" Height="34" Margin="6,0,0,0"
+                        FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14"
+                        Foreground="White" Click="OnSendClick" ToolTip="发送">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="bg" Background="#0067C0" CornerRadius="17">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="bg" Property="Background" Value="#1975C5"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter TargetName="bg" Property="Background" Value="#AAB2BC"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+            </Grid>
+
+            <Grid>
+                <ScrollViewer x:Name="ChatScroll" VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="ChatList"/>
+                </ScrollViewer>
+                <ScrollViewer x:Name="HistoryScroll" VerticalScrollBarVisibility="Auto"
+                              Visibility="Collapsed">
+                    <StackPanel x:Name="HistoryList"/>
+                </ScrollViewer>
+                <ContentControl x:Name="EmptyStateHost"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center"
+                                ClipToBounds="True"
+                                Visibility="Collapsed"
+                                IsHitTestVisible="True"/>
+            </Grid>
+        </DockPanel>
+    </Border>
+</Window>

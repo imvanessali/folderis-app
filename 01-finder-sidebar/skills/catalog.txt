@@ -1,0 +1,64 @@
+全局产物规则：所有技能默认保留原文件和每一次历史产物，并将本次产物另存为唯一的新文件。相同任务重复执行时必须自动使用 _2、_3 等不重复名称；即使用户指定了 --output，文件名已存在也不代表允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖。只有用户明确要求“覆盖原文件/原地修改”时，才允许传 --overwrite-original；使用 --in-place 的技能必须同时传这两个参数。禁止把 --output 指向输入文件。批量重命名会改动原文件名，执行前先 --dry-run 预览，只有用户明确要求重命名时才传 --overwrite-original 正式执行。
+rename-batch <files…> [--template 'file_{n}'|含{name}{n}{date}] [--regex X --replace Y] [--ext .jpg] [--dry-run] [--overwrite-original] — 批量重命名
+pdf-split <file.pdf> [--ranges 1-3,4-6]（省略则逐页拆分）— PDF拆分/提取页
+pdf-reorder <file.pdf> <顺序如3,1,2> [--output out.pdf] — 调整PDF页面顺序
+pdf-merge <files…> --output merged.pdf — 合并多个PDF
+pdf-compress <files…> [--in-place] — PDF无损压缩（压缩内容流+去重对象，内容页数不变；扫描件效果有限）
+pdf-crypt encrypt|decrypt <file.pdf> [--password 旧密码] [--new-password 新密码] — PDF加密/解密/移除复制打印限制
+pdf-convert --file f.pdf --to png|jpg --pages 5|1-3,7|all [--output 目录]；--file f.pdf --to txt|docx [--pages 5|1-3,7]；--file f.docx --to pdf；--to images-to-pdf --files 图片… --output out.pdf — PDF与图片/Word互转（PDF转图片必须明确页码，禁止省略后默认全量；PDF转txt强制逐页OCR，不读取文本层；docx高保真需LibreOffice，否则文字级，先提醒用户选择）
+pdf-ocr <files…> [--pages 5|1-3,7] [--output out.txt] [--dpi 220] [--password 密码] — 提取/识别PDF文字时必须使用；默认直接返回指定页文字且不创建文件，只有用户明确要求保存时才传--output；中间图片仅放临时目录并自动删除；禁止另行拆分PDF或把所有页面导出成图片
+merge-docs <files…> --output out.txt|out.docx — 批量合并Word/TXT
+txt-clean <files…> [--trim] [--collapse-blank] [--strip-all-blank] [--in-place] — 清理空格空行
+txt-split <file> --lines N|--chars N|--delimiter 'xx' — 文本分割
+excel-split <file.xlsx> — 每个工作表拆成独立文件
+excel-merge <files…> --output out.xlsx [--into-one-sheet] — 多表合并
+excel-dedupe <file.xlsx> [--columns 1,2] — 按列去重
+excel-diff <a.xlsx> <b.xlsx> [--columns 1] — 两表按键比对差异
+excel-transform <file.xlsx> --split-column N --delimiter '-'|--regex '(组1)(组2)' [--drop-source] ；或 --merge-columns 2,3 [--delimiter ' '] — 列拆分/列合并（新列插在右侧不覆盖；更复杂的单元格规则可现场写 openpyxl 脚本用 run_command 执行）
+excel-derive-split-sheets <file.xls|xlsx> [--date-column Date] [--group-column Country] [--derived-column Month] [--output out.xlsx] — 从日期生成 Month 列，按地区/国家拆成同一工作簿的多个工作表
+excel-dummy [--rows 100] [--output 模拟库存数据.xlsx] — 直接生成 Unicode 安全的模拟库存 Excel，不在用户目录留下脚本
+csv-preview <file.csv> [--rows N] — 超大CSV快速预览（行数/列数/头部）
+encoding-convert <files…> [--source gbk] [--target utf-8] [--in-place] — 批量转文件编码（自动检测）
+img-compress <files…> [--quality 72] — 批量压缩图片（输出JPG）
+png-compress <files…> [--quality 65-90] [--in-place] — PNG视觉无损压缩（用户说“无损/视觉无损压缩”时用这个：智能量化，肉眼无差、保留透明，省60-80%体积）
+jpg-compress <files…> [--quality 85] [--strict-lossless] [--in-place] — JPG压缩：默认视觉无损重编码省30-70%；--strict-lossless 仅清EXIF元数据、像素零改动但省幅小。用户对JPG说“无损压缩”时先说明JPG无损空间有限，推荐视觉无损档
+img-resize <files…> [--width W|--height H|--percent P|--crop W,H,X,Y] — 改尺寸/裁剪；X/Y 是从图片左上角 (0,0) 开始的绝对坐标
+img-convert <files…> --to webp|heic|jpg|png — 格式互转
+img-watermark <files…> --text '文字'|--logo logo.png [--position br|bl|tr|tl|center] [--opacity 0.5] — 加水印
+img-remove-bg <files…> — 抠图去背景（Apple Vision）
+img-split <files…> --parts N [--direction vertical|horizontal] — 长图分割
+img-stitch <files…> --output out.jpg [--direction vertical|horizontal] — 多图拼接
+img-rotate <files…> [--angle 90] [--flip h|v] [--in-place] — 旋转/翻转
+img-ocr <files…> [--output out.txt] — OCR文字提取（中英日）
+img-to-ico <files…> [--output out.ico] — 生成多尺寸ICO图标
+av-extract-audio <files…> [--to mp3|m4a|wav] — 视频提取音轨
+av-trim <files…> --start 00:00:05 [--end 00:00:15] [--fast] — 批量截取视频片段（同一时间段应用到每个文件）
+av-convert <files…> --to mp4|mkv|webm|avi|mov — 视频格式互转
+av-compress <files…> [--crf 28] [--width 1280] — 压缩视频体积
+av-merge <files…> --output out.mp4 — 多段视频合并
+audio-trim / audio-concat / audio-convert — 音频裁剪/拼接/格式转换（用法同视频）
+audio-denoise <files…> [--strength 12] — 消除背景杂音（人声/伴奏分离需另装demucs，如用户需要请说明安装方法）
+av-gif <files…> [--fps 12] [--width 480] [--start 2 --duration 3] — 视频转GIF
+av-subtitles <videos…> [--subtitles x.srt] [--soft] — 字幕烧录（批量时自动配对同名 .srt/.ass/.vtt）
+hash-files <files…> [--algo md5|sha1|sha256] — 批量哈希+重复文件检测
+zip-batch extract|create-split|merge-split <files…> [--password X] [--volume-size 100m] [--output dir] — 批量解压/分卷压缩/分卷合并
+zip-repair <file.zip> — 修复损坏的ZIP压缩包
+install-component ffmpeg|pngquant|libreoffice|sevenzip|sensevoice-small|rembg — 安装可选组件（必须先征得用户明确同意；Windows 的 SenseVoiceSmall 首次约需下载260MB，完全离线运行）
+audio-transcribe <files…> [--locale zh-CN|en-US|auto] — 长音频离线转文字并另存同名txt（Windows使用SenseVoiceSmall Q8，支持中英粤日韩并自动分段；macOS使用系统语音识别并需授权；总结=转写后由你阅读txt完成）
+content-search <files…> --query '文字' — 跨格式全文搜索（txt/pdf/xlsx/docx/图片OCR），返回 文件·位置·命中行
+docx-fill <template.docx> <data.xlsx|csv> [--name-column 列名] — Word模板批量填充：模板写{{列名}}占位符，数据表每行生成一份
+table-convert <files…> — Excel↔CSV互转（xlsx每个工作表出一个csv；csv转xlsx）
+av-frames <videos…> [--every 10 | --at '0:05,1:20'] — 视频截帧成jpg
+doc-diff <a> <b> — 两份文档(txt/docx/pdf)文本对比，输出统一diff与增删统计
+qr-make <text> [--output qrcode.png] [--size 512] — 文字/链接生成二维码图片（内容上限约2900字节）
+qr-read <images…> — 批量识别图片中的二维码/条形码，输出 文件·内容
+pdf-watermark <files…> --text '机密' [--opacity 0.15] [--font-size 42] — PDF加对角平铺半透明文字水印
+pdf-stamp <files…> --image 印章.png [--page all|last|页码] [--position br|bl|tr|tl|center] [--width 150] — 把印章/签名图片盖到PDF页面（透明PNG效果最佳）
+zip-encrypt <files…> --password 密码 [--output 加密压缩包.zip] — 加密压缩（zip标准加密，通用解压工具都能解；提醒用户密码另行传递）
+excel-groupby <file.xlsx> --by 列号 [--agg sum|count|avg] [--value 数值列号] — 按列分组汇总（求和/计数/平均），列号从1起
+dir-inventory [目录] [--output 文件清单.xlsx] — 导出文件夹清单Excel（名称/相对路径/类型/大小/修改时间，递归、跳过隐藏文件）
+excel-update-by-key --source 源.xlsx --target 目标.xlsx --key 分公司 [--columns 引流数,转化数] [--source-sheet S] [--target-sheet T] [--output out.xlsx] — 按关联键把源表数据同步进目标表对应列（目标表公式/其余单元格不动，未匹配键会列出）
+extract-patterns <files…> [--type phone|email|idcard|custom] [--regex 正则] [--context 归属列名] [--output out.xlsx] — 从混杂表格提取手机号/邮箱/身份证并去重，可带同行归属列，输出含来源定位
+excel-split-column <file.xlsx> --by 列名或列号 [--sheet S] — 按某列的值拆成多个独立文件（各含表头，保留列宽）
+excel-fuzzy-merge <A.xlsx> <B.xlsx> --key-a 列 --key-b 列 [--columns 补全列] [--threshold 0.6] — 键拼写不一致时按相似度关联，B 表数据补进 A 表，附"匹配到/相似度"列供人工复核
+doc-to-markdown <files…> [--output-dir 目录] — docx/xlsx/csv/pdf/html/txt 批量转 Markdown（标题层级/表格保留，适合知识库）

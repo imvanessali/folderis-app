@@ -1,0 +1,52 @@
+name: FinderSidebar
+options:
+  bundleIdPrefix: com.local.findersidebar
+  deploymentTarget:
+    macOS: "13.0"
+
+targets:
+  FinderSidebarHost:
+    type: application
+    platform: macOS
+    sources: [HostApp]
+    info:
+      path: HostApp/Info.plist
+      properties:
+        NSAppleEventsUsageDescription: "需要读取 Finder 窗口位置，以便把聊天面板贴靠在 Finder 窗口旁边。"
+        LSMinimumSystemVersion: "13.0"
+        NSHighResolutionCapable: true
+    entitlements:
+      path: HostApp/HostApp.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.findersidebar.host
+        PRODUCT_NAME: Folderis
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "20260716"
+    dependencies:
+      - target: FinderSidebarExt
+        embed: true
+
+  FinderSidebarExt:
+    type: app-extension
+    platform: macOS
+    sources: [FinderExtension]
+    info:
+      path: FinderExtension/Info.plist
+      properties:
+        CFBundlePackageType: XPC!
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.FinderSync
+          NSExtensionPrincipalClass: FinderSync
+    entitlements:
+      path: FinderExtension/FinderExtension.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.findersidebar.host.FinderSidebarExt
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: true
