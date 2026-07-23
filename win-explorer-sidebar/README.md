@@ -42,6 +42,24 @@ Explorer 集成和 DPAPI。发布前仍需在 Windows 真机冒烟测试。
 编译 Folderis Full 和 Lite。GitHub Actions 的 `Windows Build` 工作流会在真实
 `windows-latest` runner 上执行同样的双变体编译门禁。
 
+## 发布签名（Authenticode）
+
+未签名的安装器和应用会触发 Unknown Publisher / SmartScreen 警告（2026-07-23 QA D3）。
+`build_release.sh` 支持在 macOS 上用 [osslsigncode](https://github.com/mtrojnar/osslsigncode)
+（`brew install osslsigncode`）对内部 `Folderis.exe` / `Folderis Lite.exe` 及两个
+安装器签名：
+
+```bash
+export FOLDERIS_SIGN_PFX=/path/to/codesign.pfx     # 代码签名证书
+export FOLDERIS_SIGN_PASSWORD=…                     # 证书密码（可选）
+export FOLDERIS_SIGN_REQUIRE=1                      # 正式发布：缺证书直接失败
+./win-explorer-sidebar/build_release.sh
+```
+
+时间戳服务器默认 `http://timestamp.digicert.com`，可用
+`FOLDERIS_SIGN_TIMESTAMP_URL` 覆盖。未设置证书时脚本会构建成功但在结尾输出
+显著的未签名警告。
+
 ## 移植状态表
 
 | 能力 | 状态 | 备注 |

@@ -83,6 +83,8 @@ dispatch("LD-07","水印拒接", IMG, "加个水印再裁剪成800×600", [JPG],
 dispatch("LD-08","缺参拒接", IMG, "帮我裁剪一下", [JPG], False)
 dispatch("LD-09","覆盖拒接", IMG, "转成webp并覆盖原文件", [JPG], False)
 dispatch("LD-10","混合拒接", IMG, "转成webp顺便压缩一下", [JPG], False)
+dispatch("LD-11","本地视频压缩", VID, "压缩这个视频", [MP4], True)
+dispatch("LD-12","视频打包拒接", VID, "把这个视频打包压缩", [MP4], False)
 
 # 跨平台技能回归（Windows 可用集）
 run("W-01","水印", IMG, ["img-watermark", JPG, "--text","(c) 2026","--position","br"])
