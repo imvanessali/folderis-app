@@ -24,6 +24,8 @@
     <AssemblyName>Folderis Lite</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="UIAutomationClient" />
+    <Reference Include="UIAutomationTypes" />
     <!-- 技能工具箱与 macOS 版共用同一份源文件，编译期内嵌，首用时释放到运行时目录 -->
     <EmbeddedResource Include="../../../01-finder-sidebar/skills/skills.py" LogicalName="skills.py" />
     <EmbeddedResource Include="../../../01-finder-sidebar/skills/catalog.txt" LogicalName="catalog.txt" />
