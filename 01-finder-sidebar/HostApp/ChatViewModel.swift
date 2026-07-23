@@ -242,6 +242,7 @@ final class ChatViewModel: ObservableObject {
         if !boundSelection.isEmpty,
            boundSelection.contains(where: { !FileManager.default.fileExists(atPath: $0.path) }) {
             sendTask?.cancel()
+            terminateCLIProcess()
             cancelPendingCommand()
             isSending = false
             subagents = []
@@ -256,6 +257,7 @@ final class ChatViewModel: ObservableObject {
         guard let folder = boundFolder,
               !FileManager.default.fileExists(atPath: folder.path) else { return }
         sendTask?.cancel()
+        terminateCLIProcess()
         cancelPendingCommand()
         isSending = false
         subagents = []
@@ -497,8 +499,8 @@ final class ChatViewModel: ObservableObject {
             )
 #else
             return L(
-                "当前使用的是 DeepSeek API。它不能查看 PDF 页面的视觉画面，Folderis 目前无法可靠完成“翻译内容并保持原 PDF 版式一致”，所以我没有开始处理，也不会生成页面图片。\n\n你可以改为：\n1. 只提取并翻译指定页文字；\n2. 生成近似排版的新 PDF，但不保证与原版一致；\n3. 在完整版中切换 Claude Code 或 Codex 后再尝试。",
-                "The current DeepSeek API cannot inspect the visual appearance of PDF pages, so Folderis cannot reliably translate content while preserving the original layout. Nothing has been processed and no page images were created.\n\nYou can instead request: 1. text-only translation of specified pages; 2. a new PDF with approximate layout; or 3. switch to Claude Code or Codex in the full version."
+                "当前使用的是 DeepSeek API。它不能查看 PDF 页面的视觉画面，Folderis 目前无法可靠完成“翻译内容并保持原 PDF 版式一致”，所以我没有开始处理，也不会生成页面图片。\n\n你可以改为：\n1. 只提取并翻译指定页文字；\n2. 生成近似排版的新 PDF，但不保证与原版一致；\n3. 在完整版中切换 Claude Code、Codex 或 Cursor 后再尝试。",
+                "The current DeepSeek API cannot inspect the visual appearance of PDF pages, so Folderis cannot reliably translate content while preserving the original layout. Nothing has been processed and no page images were created.\n\nYou can instead request: 1. text-only translation of specified pages; 2. a new PDF with approximate layout; or 3. switch to Claude Code, Codex, or Cursor in the full version."
             )
 #endif
         }
@@ -669,7 +671,7 @@ final class ChatViewModel: ObservableObject {
         return error.localizedDescription
     }
 
-    // MARK: - CLI 后端（Claude Code / Codex）：驱动本机已登录的代理 CLI，
+    // MARK: - CLI 后端（Claude Code / Codex / Cursor）：驱动本机已登录的代理 CLI，
     // 用量走用户订阅；任务以绑定文件夹为 cwd，自动进入其项目会话列表。
 
     /// 每个会话对应的 CLI session id（用于 resume），随历史持久化。
@@ -688,7 +690,14 @@ final class ChatViewModel: ObservableObject {
         let backend = settings.backend
         let cwd = boundFolder ?? FileManager.default.homeDirectoryForCurrentUser
 
-        guard let cliPath = backend == .claudeCode ? settings.claudeCLIPath : settings.codexCLIPath else {
+        let cliPath: String?
+        switch backend {
+        case .claudeCode: cliPath = settings.claudeCLIPath
+        case .codex: cliPath = settings.codexCLIPath
+        case .cursor: cliPath = settings.cursorCLIPath
+        case .builtinAPI: cliPath = nil
+        }
+        guard let cliPath else {
             throw APIError.server(status: 0, body: L("未检测到 \(backend.displayName) CLI，请确认已安装并登录", "\(backend.displayName) CLI not found — make sure it is installed and logged in"))
         }
 
@@ -703,7 +712,7 @@ final class ChatViewModel: ObservableObject {
             case .yolo: args += ["--dangerously-skip-permissions"]
             default: args += ["--permission-mode", "acceptEdits"]
             }
-        } else {
+        } else if backend == .codex {
             if let sid = backendSessionIDs[sessionKey] {
                 args = ["exec", "resume", sid, "--json"]
             } else {
@@ -715,6 +724,19 @@ final class ChatViewModel: ObservableObject {
                 args += ["--full-auto"]
             }
             args.append(prompt)
+        } else {
+            args = [
+                "-p", prompt,
+                "--output-format", "stream-json",
+                "--stream-partial-output"
+            ]
+            if let sid = backendSessionIDs[sessionKey] {
+                args += ["--resume", sid]
+            }
+            // Cursor print mode only writes files when --force is enabled.
+            if settings.approvalMode == .yolo {
+                args += ["--force"]
+            }
         }
 
         activity = L("\(backend.displayName) 运行中…", "\(backend.displayName) running…")
@@ -725,7 +747,8 @@ final class ChatViewModel: ObservableObject {
         process.currentDirectoryURL = cwd
         // 干净环境：去掉嵌套会话/API Key 类变量，避免干扰 CLI 自身认证。
         var env = ProcessInfo.processInfo.environment
-        for key in env.keys where key.hasPrefix("ANTHROPIC_") || key.hasPrefix("CLAUDE") || key.hasPrefix("OPENAI_") {
+        for key in env.keys where key.hasPrefix("ANTHROPIC_") || key.hasPrefix("CLAUDE")
+            || key.hasPrefix("OPENAI_") || key == "CURSOR_API_KEY" {
             env.removeValue(forKey: key)
         }
         process.environment = env
@@ -763,7 +786,7 @@ final class ChatViewModel: ObservableObject {
                 completedNormally = true
                 if object["is_error"] as? Bool == true {
                     streamedFailure = (object["result"] as? String)
-                        ?? L("Claude Code 任务失败", "Claude Code task failed")
+                        ?? L("\(backend.displayName) 任务失败", "\(backend.displayName) task failed")
                 }
             }
             handleCLIEvent(object, backend: backend, sessionKey: sessionKey, bubbleID: bubbleID)
@@ -774,7 +797,14 @@ final class ChatViewModel: ObservableObject {
             throw APIError.server(status: Int(process.terminationStatus), body: streamedFailure)
         }
         if process.terminationStatus != 0 {
-            let detail = stderrText.isEmpty
+            let isCursorAuthFailure = backend == .cursor
+                && (stderrText.localizedCaseInsensitiveContains("authentication required")
+                    || stderrText.localizedCaseInsensitiveContains("not logged in")
+                    || stderrText.localizedCaseInsensitiveContains("not authenticated"))
+            let detail = isCursorAuthFailure
+                ? L("Cursor 未登录：请打开终端运行 cursor-agent login，完成后重试",
+                    "Cursor is not signed in — run `cursor-agent login` in Terminal, then retry")
+                : stderrText.isEmpty
                 ? L("进程异常退出", "process exited unexpectedly")
                 : String(stderrText.prefix(500))
             throw APIError.server(status: Int(process.terminationStatus),
@@ -798,24 +828,64 @@ final class ChatViewModel: ObservableObject {
     }
 
     func terminateCLIProcess() {
-        cliProcess?.terminate()
+        guard let process = cliProcess else { return }
+        // CLI agents may have shell commands running below them. Signal every
+        // descendant so Stop does not leave orphan work behind.
+        for pid in Self.descendantProcessIDs(of: process.processIdentifier).reversed() {
+            Darwin.kill(pid, SIGTERM)
+        }
+        if process.isRunning { process.terminate() }
         cliProcess = nil
+    }
+
+    nonisolated private static func descendantProcessIDs(of rootPID: pid_t) -> [pid_t] {
+        var result: [pid_t] = []
+        var pending = [rootPID]
+        var visited = Set<pid_t>()
+        while let parent = pending.popLast() {
+            guard visited.insert(parent).inserted else { continue }
+            let probe = Process()
+            probe.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            probe.arguments = ["-P", String(parent)]
+            let output = Pipe()
+            probe.standardOutput = output
+            probe.standardError = Pipe()
+            guard (try? probe.run()) != nil else { continue }
+            probe.waitUntilExit()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let children = (String(data: data, encoding: .utf8) ?? "")
+                .split(whereSeparator: \.isNewline)
+                .compactMap { pid_t($0) }
+            result.append(contentsOf: children)
+            pending.append(contentsOf: children)
+        }
+        return result
     }
 
     private func handleCLIEvent(_ object: [String: Any], backend: BackendKind,
                                 sessionKey: String, bubbleID: UUID) {
-        if backend == .claudeCode {
+        if let sid = object["session_id"] as? String {
+            backendSessionIDs[sessionKey] = sid
+        }
+        if backend == .claudeCode || backend == .cursor {
             switch object["type"] as? String {
             case "system":
                 if let sid = object["session_id"] as? String {
                     backendSessionIDs[sessionKey] = sid
                 }
             case "assistant":
+                // Cursor partial mode also emits buffered copies. Only these
+                // events are real deltas; final text remains a result fallback.
+                if backend == .cursor,
+                   object["timestamp_ms"] == nil || object["model_call_id"] != nil {
+                    return
+                }
                 guard let message = object["message"] as? [String: Any],
                       let content = message["content"] as? [[String: Any]] else { return }
                 for block in content {
                     if block["type"] as? String == "text", let text = block["text"] as? String {
-                        appendToBubble(bubbleID, textSeparatorIfNeeded(bubbleID) + text)
+                        let separator = backend == .cursor ? "" : textSeparatorIfNeeded(bubbleID)
+                        appendToBubble(bubbleID, separator + text)
                     } else if block["type"] as? String == "tool_use",
                               let name = block["name"] as? String {
                         activity = "🔧 \(name)"
@@ -827,9 +897,13 @@ final class ChatViewModel: ObservableObject {
                 }
                 if object["is_error"] as? Bool == true {
                     let raw = (object["result"] as? String) ?? L("未知错误", "unknown error")
-                    errorMessage = raw.lowercased().contains("authenticat")
-                        ? L("Claude Code 登录已过期：请打开终端运行 claude（会引导重新登录），完成后重试", "Claude Code login expired — run `claude` in Terminal to sign in again, then retry")
-                        : L("Claude Code 出错：\(raw.prefix(200))", "Claude Code error: \(raw.prefix(200))")
+                    if raw.lowercased().contains("authenticat") || raw.lowercased().contains("logged in") {
+                        errorMessage = backend == .cursor
+                            ? L("Cursor 未登录：请打开终端运行 cursor-agent login，完成后重试", "Cursor is not signed in — run `cursor-agent login` in Terminal, then retry")
+                            : L("Claude Code 登录已过期：请打开终端运行 claude（会引导重新登录），完成后重试", "Claude Code login expired — run `claude` in Terminal to sign in again, then retry")
+                    } else {
+                        errorMessage = L("\(backend.displayName) 出错：\(raw.prefix(200))", "\(backend.displayName) error: \(raw.prefix(200))")
+                    }
                     return
                 }
                 // 兜底：全程没有 assistant 文本时用 result 字段
@@ -839,6 +913,13 @@ final class ChatViewModel: ObservableObject {
                     appendToBubble(bubbleID, result)
                 }
             default:
+                if backend == .cursor,
+                   object["type"] as? String == "tool_call",
+                   object["subtype"] as? String == "started",
+                   let toolCall = object["tool_call"] as? [String: Any],
+                   let toolName = toolCall.keys.first {
+                    activity = "🔧 \(toolName)"
+                }
                 break
             }
         } else {

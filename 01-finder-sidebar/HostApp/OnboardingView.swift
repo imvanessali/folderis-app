@@ -1,7 +1,7 @@
 import SwiftUI
 import ApplicationServices
 
-/// 首次启动引导：选择 AI 来源（优先 Claude Code / Codex，没有则配 DeepSeek）→ 授权。
+/// 首次启动引导：选择 AI 来源（优先本机代理 CLI，没有则配 DeepSeek）→ 授权。
 /// 完成标记存 UserDefaults，之后不再弹出。
 @MainActor
 enum Onboarding {
@@ -151,6 +151,10 @@ struct OnboardingView: View {
                             detected: settings.codexCLIPath != nil,
                             detail: L("复用你的 Codex 订阅，无需额外付费",
                                       "Reuse your Codex subscription at no additional cost"))
+                brainOption(.cursor,
+                            detected: settings.cursorCLIPath != nil,
+                            detail: L("复用你的 Cursor 订阅，无需额外付费",
+                                      "Reuse your Cursor subscription at no additional cost"))
                 brainOption(.builtinAPI,
                             detected: true,
                             detail: L("在下一步配置 Deepseek API key",
@@ -167,6 +171,8 @@ struct OnboardingView: View {
             title = detected ? "Claude Code ✓" : L("Claude Code（未检测到）", "Claude Code (not found)")
         case .codex:
             title = detected ? "Codex ✓" : L("Codex（未检测到）", "Codex (not found)")
+        case .cursor:
+            title = detected ? "Cursor ✓" : L("Cursor Agent（未检测到）", "Cursor Agent (not found)")
         case .builtinAPI:
             title = L("使用 API Key（目前只支持 DeepSeek）", "Use API Key (DeepSeek only for now)")
         }

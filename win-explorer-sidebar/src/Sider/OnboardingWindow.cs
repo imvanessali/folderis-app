@@ -140,8 +140,10 @@ public sealed class OnboardingWindow : Window
 #if !MVP_DEEPSEEK
         var claude = CliBackend.DetectPath("claude");
         var codex = CliBackend.DetectPath("codex");
+        var cursor = CliBackend.DetectCursorPath();
         if ((_selectedBackend == "ClaudeCode" && claude is null) ||
-            (_selectedBackend == "Codex" && codex is null))
+            (_selectedBackend == "Codex" && codex is null) ||
+            (_selectedBackend == "Cursor" && cursor is null))
             _selectedBackend = "BuiltinApi";
 
         panel.Children.Add(BackendRow("ClaudeCode", claude is not null,
@@ -150,6 +152,9 @@ public sealed class OnboardingWindow : Window
         panel.Children.Add(BackendRow("Codex", codex is not null,
             codex is not null ? "Codex ✓" : L10n.T("Codex（未检测到）", "Codex (not found)"),
             L10n.T("复用你的 Codex 订阅，无需额外付费", "Reuse your Codex subscription at no additional cost")));
+        panel.Children.Add(BackendRow("Cursor", cursor is not null,
+            cursor is not null ? "Cursor ✓" : L10n.T("Cursor Agent（未检测到）", "Cursor Agent (not found)"),
+            L10n.T("复用你的 Cursor 订阅，无需额外付费", "Reuse your Cursor subscription at no additional cost")));
         panel.Children.Add(BackendRow("BuiltinApi", true,
             L10n.T("使用 API Key（目前只支持 DeepSeek）", "Use API Key (DeepSeek only for now)"),
             L10n.T("在下一步配置 Deepseek API key", "Configure the DeepSeek API key in the next step")));

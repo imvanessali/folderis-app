@@ -5,10 +5,10 @@ using System.Text.Json.Nodes;
 namespace Sider;
 
 /// <summary>
-/// CLI 后端：驱动本机已登录的 Claude Code / Codex，用量走用户订阅。
-/// 与 macOS 版同一套协议（claude -p stream-json / codex exec --json）。
+/// CLI 后端：驱动本机已登录的 Claude Code / Codex / Cursor，用量走用户订阅。
+/// 与 macOS 版使用同一套 CLI 流式协议。
 /// </summary>
-public enum BackendKind { BuiltinApi, ClaudeCode, Codex }
+public enum BackendKind { BuiltinApi, ClaudeCode, Codex, Cursor }
 
 public sealed class CliBackend
 {
@@ -60,6 +60,36 @@ public sealed class CliBackend
         return null;
     }
 
+    /// <summary>Cursor Agent 新版命令为 cursor-agent，兼容早期 agent 别名。</summary>
+    public static string? DetectCursorPath()
+    {
+        if (DetectPath("cursor-agent") is { } current) return current;
+        if (OperatingSystem.IsWindows())
+        {
+            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var nativeLaunchers = new[]
+            {
+                Path.Combine(local, "cursor-agent", "cursor-agent.ps1"),
+                Path.Combine(local, "cursor-agent", "agent.ps1")
+            };
+            if (nativeLaunchers.FirstOrDefault(File.Exists) is { } launcher)
+                return launcher;
+        }
+        // `agent` is a generic name, so only trust directories used by
+        // Cursor's legacy installer instead of scanning all of PATH.
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var exeNames = OperatingSystem.IsWindows()
+            ? new[] { "agent.cmd", "agent.exe" }
+            : new[] { "agent" };
+        var dirs = new[]
+        {
+            Path.Combine(home, ".local", "bin"),
+            Path.Combine(home, ".cursor", "bin")
+        };
+        return dirs.SelectMany(dir => exeNames.Select(exe => Path.Combine(dir, exe)))
+            .FirstOrDefault(File.Exists);
+    }
+
     public async Task<string?> RunAsync(
         BackendKind kind, string cliPath, string prompt, string cwd, bool yolo,
         Action<string> onDelta, Action<string> onActivity, CancellationToken ct)
@@ -72,17 +102,32 @@ public sealed class CliBackend
             if (SessionIds.TryGetValue(key, out var sid)) args.AddRange(["--resume", sid]);
             args.AddRange(yolo ? ["--dangerously-skip-permissions"] : ["--permission-mode", "acceptEdits"]);
         }
-        else
+        else if (kind == BackendKind.Codex)
         {
             if (SessionIds.TryGetValue(key, out var sid)) args.AddRange(["exec", "resume", sid, "--json"]);
             else args.AddRange(["exec", "--json"]);
             args.Add(yolo ? "--dangerously-bypass-approvals-and-sandbox" : "--full-auto");
             args.Add(prompt);
         }
+        else
+        {
+            args.AddRange([
+                "-p", prompt,
+                "--output-format", "stream-json",
+                "--stream-partial-output"
+            ]);
+            if (SessionIds.TryGetValue(key, out var sid)) args.AddRange(["--resume", sid]);
+            // Cursor print mode only writes files when --force is enabled.
+            if (yolo) args.Add("--force");
+        }
 
+        var isPowerShellLauncher = OperatingSystem.IsWindows()
+            && cliPath.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase);
         var psi = new ProcessStartInfo
         {
-            FileName = cliPath,
+            FileName = isPowerShellLauncher
+                ? Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe")
+                : cliPath,
             WorkingDirectory = cwd,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -90,10 +135,14 @@ public sealed class CliBackend
             CreateNoWindow = true,
             StandardOutputEncoding = System.Text.Encoding.UTF8
         };
+        if (isPowerShellLauncher)
+            foreach (var a in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", cliPath })
+                psi.ArgumentList.Add(a);
         foreach (var a in args) psi.ArgumentList.Add(a);
         // 净化可能干扰 CLI 自身认证的变量（按前缀）
         foreach (var k in psi.Environment.Keys.Where(k =>
-            k.StartsWith("ANTHROPIC_") || k.StartsWith("CLAUDE") || k.StartsWith("OPENAI_")).ToList())
+            k.StartsWith("ANTHROPIC_") || k.StartsWith("CLAUDE") || k.StartsWith("OPENAI_")
+            || k == "CURSOR_API_KEY").ToList())
             psi.Environment.Remove(k);
 
         using var proc = Process.Start(psi)!;
@@ -121,16 +170,19 @@ public sealed class CliBackend
                     streamedFailure = ErrorText(node) ?? L10n.T("Codex 任务失败", "Codex task failed");
             }
 
-            if (kind == BackendKind.ClaudeCode)
+            if (kind is BackendKind.ClaudeCode or BackendKind.Cursor)
             {
                 var type = eventType;
                 if (type == "assistant" && node["message"]?["content"] is JsonArray blocks)
                 {
+                    if (kind == BackendKind.Cursor
+                        && (node["timestamp_ms"] is null || node["model_call_id"] is not null))
+                        continue;
                     foreach (var b in blocks)
                     {
                         if ((string?)b?["type"] == "text" && (string?)b?["text"] is { } t)
                         {
-                            onDelta((appended ? "\n\n" : "") + t);
+                            onDelta((appended && kind == BackendKind.ClaudeCode ? "\n\n" : "") + t);
                             appended = true;
                         }
                         else if ((string?)b?["type"] == "tool_use" && (string?)b?["name"] is { } n)
@@ -143,10 +195,27 @@ public sealed class CliBackend
                     if ((bool?)node["is_error"] == true)
                     {
                         var raw = (string?)node["result"] ?? L10n.T("未知错误", "unknown error");
-                        streamedFailure = raw.Contains("authenticat", StringComparison.OrdinalIgnoreCase)
-                            ? L10n.T("Claude Code 登录已过期：请在终端运行 claude 重新登录后重试", "Claude Code login expired — run `claude` in a terminal to sign in again, then retry")
-                            : $"Claude Code 出错：{raw[..Math.Min(200, raw.Length)]}";
+                        var authFailure = raw.Contains("authenticat", StringComparison.OrdinalIgnoreCase)
+                            || raw.Contains("logged in", StringComparison.OrdinalIgnoreCase);
+                        streamedFailure = authFailure
+                            ? kind == BackendKind.Cursor
+                                ? L10n.T("Cursor 未登录：请在终端运行 cursor-agent login 后重试", "Cursor is not signed in — run `cursor-agent login` in a terminal, then retry")
+                                : L10n.T("Claude Code 登录已过期：请在终端运行 claude 重新登录后重试", "Claude Code login expired — run `claude` in a terminal to sign in again, then retry")
+                            : $"{kind} 出错：{raw[..Math.Min(200, raw.Length)]}";
                     }
+                    else if (!appended && (string?)node["result"] is { Length: > 0 } finalText)
+                    {
+                        onDelta(finalText);
+                        appended = true;
+                    }
+                }
+                else if (kind == BackendKind.Cursor
+                         && type == "tool_call"
+                         && (string?)node["subtype"] == "started"
+                         && node["tool_call"] is JsonObject toolCall)
+                {
+                    var toolName = toolCall.Select(kv => kv.Key).FirstOrDefault();
+                    if (!string.IsNullOrEmpty(toolName)) onActivity($"🔧 {toolName}");
                 }
             }
             else if (node["item"] is JsonObject item
@@ -163,7 +232,14 @@ public sealed class CliBackend
             throw new InvalidOperationException(streamedFailure);
         if (proc.ExitCode != 0)
         {
-            var detail = string.IsNullOrWhiteSpace(stderr)
+            var cursorAuthFailure = kind == BackendKind.Cursor
+                && (stderr.Contains("authentication required", StringComparison.OrdinalIgnoreCase)
+                    || stderr.Contains("not logged in", StringComparison.OrdinalIgnoreCase)
+                    || stderr.Contains("not authenticated", StringComparison.OrdinalIgnoreCase));
+            var detail = cursorAuthFailure
+                ? L10n.T("Cursor 未登录：请在终端运行 cursor-agent login 后重试",
+                         "Cursor is not signed in — run `cursor-agent login` in a terminal, then retry")
+                : string.IsNullOrWhiteSpace(stderr)
                 ? L10n.T("进程异常退出", "process exited unexpectedly")
                 : stderr[..Math.Min(500, stderr.Length)];
             throw new InvalidOperationException($"{kind}: {detail}");

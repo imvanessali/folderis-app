@@ -16,7 +16,7 @@ public sealed class Settings
     public string BaseUrl { get; set; } = DeepSeekBaseUrl;
     public string Model { get; set; } = DeepSeekModel;
     public string ApiKey { get; set; } = "";
-    public string Backend { get; set; } = "BuiltinApi"; // BuiltinApi | ClaudeCode | Codex
+    public string Backend { get; set; } = "BuiltinApi"; // BuiltinApi | ClaudeCode | Codex | Cursor
     public bool OnboardingDone { get; set; }
     public string ApprovalMode { get; set; } = "ask"; // ask | safeAuto | yolo
 

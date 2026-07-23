@@ -243,6 +243,7 @@ public partial class MainPanel : Window
         var selectedBackend = _settings.Backend;
         var rbClaude = new RadioButton { GroupName = "settings-backend", Margin = new Thickness(0, 3, 0, 3) };
         var rbCodex = new RadioButton { GroupName = "settings-backend", Margin = new Thickness(0, 3, 0, 3) };
+        var rbCursor = new RadioButton { GroupName = "settings-backend", Margin = new Thickness(0, 3, 0, 3) };
         var rbDeepSeek = new RadioButton
         {
             GroupName = "settings-backend",
@@ -251,6 +252,7 @@ public partial class MainPanel : Window
         };
         var retryClaude = new Button { Content = L10n.T("重新检测", "Detect again"), Padding = new Thickness(8, 2, 8, 2) };
         var retryCodex = new Button { Content = L10n.T("重新检测", "Detect again"), Padding = new Thickness(8, 2, 8, 2) };
+        var retryCursor = new Button { Content = L10n.T("重新检测", "Detect again"), Padding = new Thickness(8, 2, 8, 2) };
         var caption = new SelectableText
         {
             FontSize = 11,
@@ -274,12 +276,14 @@ public partial class MainPanel : Window
         {
             rbClaude.IsChecked = selectedBackend == "ClaudeCode";
             rbCodex.IsChecked = selectedBackend == "Codex";
+            rbCursor.IsChecked = selectedBackend == "Cursor";
             rbDeepSeek.IsChecked = selectedBackend == "BuiltinApi";
             keySection.Visibility = selectedBackend == "BuiltinApi" ? Visibility.Visible : Visibility.Collapsed;
             caption.Text = selectedBackend switch
             {
                 "ClaudeCode" => L10n.T("复用你的 Claude 订阅，无需额外付费", "Reuse your Claude subscription at no additional cost"),
                 "Codex" => L10n.T("复用你的 Codex 订阅，无需额外付费", "Reuse your Codex subscription at no additional cost"),
+                "Cursor" => L10n.T("复用你的 Cursor 订阅，无需额外付费", "Reuse your Cursor subscription at no additional cost"),
                 _ => L10n.T("直连 DeepSeek API，需填写下方 Key。", "Connects directly to DeepSeek; enter the key below.")
             };
         }
@@ -288,23 +292,30 @@ public partial class MainPanel : Window
         {
             var claude = CliBackend.DetectPath("claude");
             var codex = CliBackend.DetectPath("codex");
+            var cursor = CliBackend.DetectCursorPath();
             rbClaude.Content = claude is not null ? "Claude Code ✓" : L10n.T("Claude Code（未检测到）", "Claude Code (not found)");
             rbClaude.IsEnabled = claude is not null;
             retryClaude.Visibility = claude is null ? Visibility.Visible : Visibility.Collapsed;
             rbCodex.Content = codex is not null ? "Codex ✓" : L10n.T("Codex（未检测到）", "Codex (not found)");
             rbCodex.IsEnabled = codex is not null;
             retryCodex.Visibility = codex is null ? Visibility.Visible : Visibility.Collapsed;
+            rbCursor.Content = cursor is not null ? "Cursor ✓" : L10n.T("Cursor Agent（未检测到）", "Cursor Agent (not found)");
+            rbCursor.IsEnabled = cursor is not null;
+            retryCursor.Visibility = cursor is null ? Visibility.Visible : Visibility.Collapsed;
             if ((selectedBackend == "ClaudeCode" && claude is null) ||
-                (selectedBackend == "Codex" && codex is null))
+                (selectedBackend == "Codex" && codex is null) ||
+                (selectedBackend == "Cursor" && cursor is null))
                 selectedBackend = "BuiltinApi";
             SyncBackendUi();
         }
 
         rbClaude.Checked += (_, _) => { selectedBackend = "ClaudeCode"; SyncBackendUi(); };
         rbCodex.Checked += (_, _) => { selectedBackend = "Codex"; SyncBackendUi(); };
+        rbCursor.Checked += (_, _) => { selectedBackend = "Cursor"; SyncBackendUi(); };
         rbDeepSeek.Checked += (_, _) => { selectedBackend = "BuiltinApi"; SyncBackendUi(); };
         retryClaude.Click += (_, _) => RefreshDetection();
         retryCodex.Click += (_, _) => RefreshDetection();
+        retryCursor.Click += (_, _) => RefreshDetection();
 
         content.Children.Add(new SelectableText
         {
@@ -314,6 +325,7 @@ public partial class MainPanel : Window
         });
         content.Children.Add(BackendRow(rbClaude, retryClaude));
         content.Children.Add(BackendRow(rbCodex, retryCodex));
+        content.Children.Add(BackendRow(rbCursor, retryCursor));
         content.Children.Add(rbDeepSeek);
         content.Children.Add(caption);
         RefreshDetection();
@@ -1170,7 +1182,7 @@ public partial class MainPanel : Window
                     Reply().Text = reply;
                     hist.Add(new JsonObject { ["role"] = "assistant", ["content"] = reply });
                     if (_settings.Backend != "BuiltinApi")
-                        _cliBackend.SessionIds.Remove(_settings.Backend == "Codex" ? "Codex" : "ClaudeCode");
+                        _cliBackend.SessionIds.Remove(_settings.Backend);
                     if (ReferenceEquals(hist, _history)) SaveConversation();
                     return;
                 }
@@ -1178,8 +1190,18 @@ public partial class MainPanel : Window
 #if !MVP_DEEPSEEK
             if (_settings.Backend != "BuiltinApi")
             {
-                var kind = _settings.Backend == "Codex" ? BackendKind.Codex : BackendKind.ClaudeCode;
-                var cli = CliBackend.DetectPath(kind == BackendKind.Codex ? "codex" : "claude")
+                var kind = _settings.Backend switch
+                {
+                    "Codex" => BackendKind.Codex,
+                    "Cursor" => BackendKind.Cursor,
+                    _ => BackendKind.ClaudeCode
+                };
+                var cli = kind switch
+                {
+                    BackendKind.Codex => CliBackend.DetectPath("codex"),
+                    BackendKind.Cursor => CliBackend.DetectCursorPath(),
+                    _ => CliBackend.DetectPath("claude")
+                }
                     ?? throw new InvalidOperationException(L10n.T($"未检测到 {_settings.Backend} CLI", $"{_settings.Backend} CLI not found"));
                 var cliPrompt =
                     "执行边界：严格按用户指定的文件、页码、数量和格式处理，不擅自扩大为全量或批量。" +
@@ -1191,7 +1213,7 @@ public partial class MainPanel : Window
                     $"任务编号：{taskId}\n用户请求：\n" + apiText;
                 var completedSessionId = await _cliBackend.RunAsync(
                     kind, cli, cliPrompt, _context?.FolderPath ?? Environment.CurrentDirectory,
-                    yolo: false,
+                    yolo: _settings.ApprovalMode == "yolo",
                     onDelta: d => Dispatcher.Invoke(() =>
                     {
                         if (ReferenceEquals(hist, _history)) Reply().Text += d;
@@ -1316,8 +1338,8 @@ public partial class MainPanel : Window
                 "The current DeepSeek API cannot inspect PDF page visuals, so Folderis Lite cannot reliably translate content while preserving the original layout. Nothing was processed. You can request text-only translation or an approximately laid-out PDF instead.");
 #else
             return L10n.T(
-                "当前使用的是 DeepSeek API。它不能查看 PDF 页面的视觉画面，Folderis 目前无法可靠完成“翻译内容并保持原 PDF 版式一致”，所以我没有开始处理，也不会生成页面图片。\n\n你可以改为：\n1. 只提取并翻译指定页文字；\n2. 生成近似排版的新 PDF，但不保证与原版一致；\n3. 切换 Claude Code 或 Codex 后再尝试。",
-                "The current DeepSeek API cannot inspect PDF page visuals, so Folderis cannot reliably translate content while preserving the original layout. Nothing was processed. You can request text-only translation, approximate layout, or switch to Claude Code or Codex.");
+                "当前使用的是 DeepSeek API。它不能查看 PDF 页面的视觉画面，Folderis 目前无法可靠完成“翻译内容并保持原 PDF 版式一致”，所以我没有开始处理，也不会生成页面图片。\n\n你可以改为：\n1. 只提取并翻译指定页文字；\n2. 生成近似排版的新 PDF，但不保证与原版一致；\n3. 切换 Claude Code、Codex 或 Cursor 后再尝试。",
+                "The current DeepSeek API cannot inspect PDF page visuals, so Folderis cannot reliably translate content while preserving the original layout. Nothing was processed. You can request text-only translation, approximate layout, or switch to Claude Code, Codex, or Cursor.");
 #endif
         }
 

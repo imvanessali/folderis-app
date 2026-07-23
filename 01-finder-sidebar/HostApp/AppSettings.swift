@@ -60,6 +60,7 @@ enum BackendKind: String, CaseIterable, Identifiable {
     case builtinAPI = "内置 API"
     case claudeCode = "Claude Code"
     case codex = "Codex"
+    case cursor = "Cursor"
 
     var id: String { rawValue }
 
@@ -69,6 +70,7 @@ enum BackendKind: String, CaseIterable, Identifiable {
         case .builtinAPI: return L("使用 API Key（目前只支持 DeepSeek）", "Use API Key (DeepSeek only for now)")
         case .claudeCode: return "Claude Code"
         case .codex: return "Codex"
+        case .cursor: return "Cursor"
         }
     }
 
@@ -77,7 +79,22 @@ enum BackendKind: String, CaseIterable, Identifiable {
         case .builtinAPI: return L("直连 DeepSeek API，需在下方填写 Key", "Calls the DeepSeek API directly; enter its key below")
         case .claudeCode: return L("复用你的 Claude 订阅，无需额外付费", "Reuse your Claude subscription at no additional cost")
         case .codex: return L("复用你的 Codex 订阅，无需额外付费", "Reuse your Codex subscription at no additional cost")
+        case .cursor: return L("复用你的 Cursor 订阅，无需额外付费", "Reuse your Cursor subscription at no additional cost")
         }
+    }
+
+    /// Cursor Agent 的新命令是 cursor-agent；早期版本同时安装 agent 别名。
+    static func detectCursorCLIPath() -> String? {
+        if let current = detectCLIPath("cursor-agent") { return current }
+        // `agent` 过于通用，只接受 Cursor 官方安装器用过的目录，
+        // 避免把其他同名程序误识别为 Cursor。
+        let legacyCandidates = [
+            "\(NSHomeDirectory())/.local/bin/agent",
+            "\(NSHomeDirectory())/.cursor/bin/agent"
+        ]
+        return legacyCandidates.first(where: {
+            FileManager.default.isExecutableFile(atPath: $0)
+        })
     }
 
     /// 在常见安装路径 + 登录 shell PATH 中探测 CLI。
@@ -127,6 +144,7 @@ final class AppSettings: ObservableObject {
     /// 探测结果缓存（应用启动时刷新一次）。
     @Published var claudeCLIPath: String? = nil
     @Published var codexCLIPath: String? = nil
+    @Published var cursorCLIPath: String? = nil
     @Published private(set) var isDetectingCLI = false
 
     func refreshCLIDetection() {
@@ -135,9 +153,11 @@ final class AppSettings: ObservableObject {
         DispatchQueue.global(qos: .utility).async {
             let claude = BackendKind.detectCLIPath("claude")
             let codex = BackendKind.detectCLIPath("codex")
+            let cursor = BackendKind.detectCursorCLIPath()
             DispatchQueue.main.async {
                 self.claudeCLIPath = claude
                 self.codexCLIPath = codex
+                self.cursorCLIPath = cursor
                 self.isDetectingCLI = false
             }
         }

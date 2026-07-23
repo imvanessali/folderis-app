@@ -5,12 +5,13 @@
 - [ ] 首次公证通过，产出可分发 DMG（Apple 审核中）
 - [ ] 朋友圈小范围试用，收集一轮反馈
 
-## P1 · Claude Code / Codex 后端模式 ✅ 已实现（2026-07-09，三平台代码就绪）
-**一句话**：面板的"大脑"可切换——内置 API（现状）/ 本机 Claude Code / 本机 Codex，开发者直接复用自己的订阅额度。
+## P1 · Claude Code / Codex / Cursor 后端模式 ✅ 已实现（2026-07-23，三平台代码就绪）
+**一句话**：面板的"大脑"可切换——内置 API（现状）/ 本机 Claude Code / 本机 Codex / 本机 Cursor Agent，开发者直接复用自己的订阅额度。
 
-- 后端适配器抽象：`send(上下文, cwd, 流式回调, 权限回调)`；设置页增加"大脑"选择，检测本机 `claude`/`codex` 可用性
+- 后端适配器抽象：`send(上下文, cwd, 流式回调, 权限回调)`；设置页增加"大脑"选择，检测本机 `claude`/`codex`/`cursor-agent` 可用性
 - Claude Code 适配：`claude -p --output-format stream-json`，cwd=绑定文件夹；技能目录经 `--append-system-prompt` 注入；确认卡桥接其权限机制
 - Codex 适配：`codex exec` + JSON 输出，同构复用适配层
+- Cursor 适配：`cursor-agent -p --output-format stream-json`，支持登录态订阅、流式输出与会话续聊
 - **验收标准（灵魂功能）：会话双向互通**
   - [x] 面板发起的任务 = Claude Code 该文件夹项目下的正式会话，终端 `claude --resume` 可见可续（真实 CLI + cwd 天然达成；面板侧持久化 session_id 续聊）
   - [x] 终端里开始的会话，面板历史列表可见可续（历史页新增"Claude Code 终端会话"区，点开导入气泡流并经官方 --resume 续聊；解析失败静默降级）

@@ -13,7 +13,7 @@ struct SettingsView: View {
                 #if !MVP_DEEPSEEK
                 section(title: L("选择 AI 来源", "Choose AI Source")) {
                     VStack(spacing: 8) {
-                        ForEach([BackendKind.claudeCode, .codex, .builtinAPI]) { kind in
+                        ForEach([BackendKind.claudeCode, .codex, .cursor, .builtinAPI]) { kind in
                             backendRow(kind)
                         }
                     }
@@ -127,6 +127,8 @@ struct SettingsView: View {
             return settings.claudeCLIPath != nil ? "Claude Code ✓" : L("Claude Code（未检测到）", "Claude Code (not found)")
         case .codex:
             return settings.codexCLIPath != nil ? "Codex ✓" : L("Codex（未检测到）", "Codex (not found)")
+        case .cursor:
+            return settings.cursorCLIPath != nil ? "Cursor ✓" : L("Cursor Agent（未检测到）", "Cursor Agent (not found)")
         }
     }
 
@@ -135,6 +137,7 @@ struct SettingsView: View {
         case .builtinAPI: return true
         case .claudeCode: return settings.claudeCLIPath != nil
         case .codex: return settings.codexCLIPath != nil
+        case .cursor: return settings.cursorCLIPath != nil
         }
     }
 
