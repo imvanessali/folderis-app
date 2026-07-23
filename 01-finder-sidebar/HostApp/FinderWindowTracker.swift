@@ -8,6 +8,10 @@ import Combine
 /// System Settings > Privacy & Security > Accessibility.
 final class FinderWindowTracker: ObservableObject {
     @Published private(set) var frontmostFinderWindowFrame: CGRect?
+    /// Window Server ID for the Finder window represented by
+    /// `frontmostFinderWindowFrame`. The panel uses this to sit immediately
+    /// above that Finder window instead of floating above every Finder window.
+    @Published private(set) var frontmostFinderWindowNumber: Int?
     @Published private(set) var accessibilityGranted: Bool = AXIsProcessTrusted()
     /// True when Finder (or this app itself, e.g. while typing in the panel)
     /// is the active application — the panel only shows in that case.
@@ -110,10 +114,12 @@ final class FinderWindowTracker: ObservableObject {
             || (selfIsFront && frontmostFinderWindowFrame != nil)
 
         guard accessibilityGranted, isFinderFrontmost else {
+            frontmostFinderWindowNumber = nil
             frontmostFinderWindowFrame = nil
             return
         }
         guard let finderPID = findFinderPID() else {
+            frontmostFinderWindowNumber = nil
             frontmostFinderWindowFrame = nil
             return
         }
@@ -138,6 +144,7 @@ final class FinderWindowTracker: ObservableObject {
             return (window, frame)
         }
         guard !standardWindows.isEmpty else {
+            frontmostFinderWindowNumber = nil
             frontmostFinderWindowFrame = nil
             return
         }
@@ -160,6 +167,7 @@ final class FinderWindowTracker: ObservableObject {
                 )
                 if let match = standardWindows.first(where: { Self.roughlyEqual($0.frame, cocoaFrame) }) {
                     frontWindowElement = match.element
+                    frontmostFinderWindowNumber = info[kCGWindowNumber as String] as? Int
                     frontmostFinderWindowFrame = match.frame
                     return
                 }
@@ -168,6 +176,7 @@ final class FinderWindowTracker: ObservableObject {
             // 最小化的或在其他空间——当前空间其实没有可见 Finder 窗口，
             // 不能让面板贴着一个看不见的窗口出现。
             frontWindowElement = nil
+            frontmostFinderWindowNumber = nil
             frontmostFinderWindowFrame = nil
             return
         }
@@ -180,11 +189,13 @@ final class FinderWindowTracker: ObservableObject {
             let focused = focusedValue as! AXUIElement
             if Self.isStandardWindow(focused), let frame = frame(of: focused) {
                 frontWindowElement = focused
+                frontmostFinderWindowNumber = nil
                 frontmostFinderWindowFrame = frame
                 return
             }
         }
         frontWindowElement = standardWindows[0].element
+        frontmostFinderWindowNumber = nil
         frontmostFinderWindowFrame = standardWindows[0].frame
     }
 

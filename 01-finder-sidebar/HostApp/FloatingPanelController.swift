@@ -91,7 +91,10 @@ final class FloatingPanelController: NSObject {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = .floating
+        // Keep the panel at the normal window level. Its precise position in
+        // Finder's z-order is maintained relative to the attached Finder
+        // window, so another Finder window can correctly cover both of them.
+        panel.level = .normal
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -110,7 +113,7 @@ final class FloatingPanelController: NSObject {
             defer: false
         )
         orbPanel.isFloatingPanel = true
-        orbPanel.level = .floating
+        orbPanel.level = .normal
         orbPanel.hidesOnDeactivate = false
         orbPanel.isOpaque = false
         orbPanel.backgroundColor = .clear
@@ -208,7 +211,7 @@ final class FloatingPanelController: NSObject {
                 height: OrbView.total
             )
             orbPanel.setFrame(orbFrame, display: true)
-            if !orbPanel.isVisible { orbPanel.orderFrontRegardless() }
+            orderDirectlyAboveFinder(orbPanel)
             return
         }
         orbPanel.orderOut(nil)
@@ -233,7 +236,7 @@ final class FloatingPanelController: NSObject {
                 )
                 panel.setFrame(parked, display: true)
             }
-            if !panel.isVisible { panel.orderFrontRegardless() }
+            orderDirectlyAboveFinder(panel)
             return
         }
 
@@ -272,8 +275,20 @@ final class FloatingPanelController: NSObject {
             height: finder.height
         )
         panel.setFrame(panelFrame, display: true)
-        if !panel.isVisible {
-            panel.orderFrontRegardless()
+        orderDirectlyAboveFinder(panel)
+    }
+
+    /// Keep our normal-level window paired with the Finder window it is
+    /// visually attached to. Ordering on every poll also handles switching
+    /// between overlapping Finder windows whose frames happen to be equal.
+    private func orderDirectlyAboveFinder(_ window: NSWindow) {
+        if let finderWindowNumber = tracker.frontmostFinderWindowNumber {
+            window.order(.above, relativeTo: finderWindowNumber)
+        } else if !window.isVisible {
+            // Accessibility fallback: without a Window Server ID there is no
+            // safe relative target, but normal level still avoids floating
+            // above unrelated windows.
+            window.orderFront(nil)
         }
     }
 }
