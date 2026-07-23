@@ -19,30 +19,22 @@ struct SettingsView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Text(settings.backend.caption)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                    if settings.backend == .builtinAPI {
+                        Divider()
+                        apiKeyControls()
+                    } else if let caption = settings.backend.caption {
+                        Text(caption)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
-                #endif
-
-                if settings.backend == .builtinAPI {
-                // Full 与 Lite 的 API 路径都只连 DeepSeek，页面只留一个 Key。
+                #else
+                // Lite：section 标题已是 "DeepSeek API Key"，内部不再重复表头。
                 section(title: "DeepSeek API Key") {
-                    SecureField(L("粘贴你的 API Key（⌘V）", "Paste your API key (⌘V)"), text: $settings.apiKey)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14))
+                    apiKeyControls(showTitle: false)
                 }
-
-                HStack(spacing: 6) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 11))
-                    Text(L("API Key 保存在 macOS 钥匙串，不会明文写入磁盘。", "Your API key is stored in the macOS Keychain, never written to disk in plain text."))
-                        .font(.system(size: 12))
-                }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                } // 内置 API 专属区结束
+                #endif
 
                 section(title: L("命令审批", "Command Approval")) {
                     Picker("", selection: $settings.approvalMode) {
@@ -175,6 +167,45 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func apiKeyControls(showTitle: Bool = true) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                if showTitle {
+                    Text("DeepSeek API Key")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Link(L("获取 API Key →", "Get API Key →"),
+                     destination: URL(string: "https://platform.deepseek.com/api_keys")!)
+                    .font(.system(size: 12))
+            }
+
+            SecureField(L("粘贴你的 API Key（⌘V）", "Paste your API key (⌘V)"), text: $settings.apiKey)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(nsColor: .textBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(.quaternary, lineWidth: 1)
+                )
+
+            HStack(spacing: 6) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 11))
+                Text(L("API Key 保存在 macOS 钥匙串，不会明文写入磁盘。", "Your API key is stored in the macOS Keychain, never written to disk in plain text."))
+                    .font(.system(size: 12))
+            }
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Native-style building blocks

@@ -74,9 +74,9 @@ enum BackendKind: String, CaseIterable, Identifiable {
         }
     }
 
-    var caption: String {
+    var caption: String? {
         switch self {
-        case .builtinAPI: return L("直连 DeepSeek API，需在下方填写 Key", "Calls the DeepSeek API directly; enter its key below")
+        case .builtinAPI: return nil
         case .claudeCode: return L("复用你的 Claude 订阅，无需额外付费", "Reuse your Claude subscription at no additional cost")
         case .codex: return L("复用你的 Codex 订阅，无需额外付费", "Reuse your Codex subscription at no additional cost")
         case .cursor: return L("复用你的 Cursor 订阅，无需额外付费", "Reuse your Cursor subscription at no additional cost")
@@ -132,6 +132,27 @@ enum BackendKind: String, CaseIterable, Identifiable {
         let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return probe.terminationStatus == 0 && !out.isEmpty ? out : nil
+    }
+
+    /// Finder-launched apps inherit a minimal PATH that can omit the directory
+    /// containing a detected CLI and its runtime (for example `node` beside
+    /// `~/.local/bin/claude`). Always expose that directory to child processes.
+    static func environmentForCLI(
+        at cliPath: String,
+        base: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var environment = base
+        let cliDirectory = URL(fileURLWithPath: cliPath)
+            .deletingLastPathComponent()
+            .standardizedFileURL.path
+        var pathEntries = (environment["PATH"] ?? "")
+            .split(separator: ":", omittingEmptySubsequences: true)
+            .map(String.init)
+        if !pathEntries.contains(cliDirectory) {
+            pathEntries.insert(cliDirectory, at: 0)
+        }
+        environment["PATH"] = pathEntries.joined(separator: ":")
+        return environment
     }
 }
 

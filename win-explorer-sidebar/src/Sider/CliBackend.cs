@@ -139,6 +139,18 @@ public sealed class CliBackend
             foreach (var a in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", cliPath })
                 psi.ArgumentList.Add(a);
         foreach (var a in args) psi.ArgumentList.Add(a);
+        // Keep GUI launches aligned with terminal launches: the detected CLI
+        // directory can contain its runtime (for example node.exe or a shim)
+        // even when Explorer's inherited PATH does not include that directory.
+        var cliDirectory = Path.GetDirectoryName(Path.GetFullPath(cliPath));
+        if (!string.IsNullOrEmpty(cliDirectory))
+        {
+            var pathEntries = (psi.Environment["PATH"] ?? "")
+                .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+            if (!pathEntries.Contains(cliDirectory, StringComparer.OrdinalIgnoreCase))
+                psi.Environment["PATH"] = cliDirectory + Path.PathSeparator
+                    + (psi.Environment["PATH"] ?? "");
+        }
         // 净化可能干扰 CLI 自身认证的变量（按前缀）
         foreach (var k in psi.Environment.Keys.Where(k =>
             k.StartsWith("ANTHROPIC_") || k.StartsWith("CLAUDE") || k.StartsWith("OPENAI_")
@@ -229,7 +241,11 @@ public sealed class CliBackend
         await proc.WaitForExitAsync(ct);
         var stderr = (await stderrTask).Trim();
         if (!string.IsNullOrWhiteSpace(streamedFailure))
+        {
+            if (proc.ExitCode != 0)
+                throw CommandFailure(kind, proc.ExitCode, streamedFailure);
             throw new InvalidOperationException(streamedFailure);
+        }
         if (proc.ExitCode != 0)
         {
             var cursorAuthFailure = kind == BackendKind.Cursor
@@ -242,7 +258,7 @@ public sealed class CliBackend
                 : string.IsNullOrWhiteSpace(stderr)
                 ? L10n.T("进程异常退出", "process exited unexpectedly")
                 : stderr[..Math.Min(500, stderr.Length)];
-            throw new InvalidOperationException($"{kind}: {detail}");
+            throw CommandFailure(kind, proc.ExitCode, detail);
         }
         if (!completedNormally)
             throw new InvalidOperationException(L10n.T(
@@ -250,6 +266,12 @@ public sealed class CliBackend
                 $"{kind} did not complete normally. Retry; any text already shown was progress, not a completed file."));
         return discoveredSessionId;
     }
+
+    private static InvalidOperationException CommandFailure(
+        BackendKind kind, int exitCode, string detail) =>
+        new(L10n.T(
+            $"{kind} 命令执行失败（退出码 {exitCode}）：{detail}",
+            $"{kind} command failed (exit code {exitCode}): {detail}"));
 
     private static string? ErrorText(JsonNode node)
     {

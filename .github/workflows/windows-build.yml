@@ -1,0 +1,55 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "win-explorer-sidebar/**"
+      - "01-finder-sidebar/skills/**"
+      - "global.json"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "win-explorer-sidebar/**"
+      - "01-finder-sidebar/skills/**"
+      - "global.json"
+      - ".github/workflows/windows-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Folderis Full
+            lite: "false"
+          - name: Folderis Lite
+            lite: "true"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore win-explorer-sidebar/src/Sider/Sider.csproj
+
+      - name: Build
+        run: >-
+          dotnet build win-explorer-sidebar/src/Sider/Sider.csproj
+          --configuration Release
+          --no-restore
+          -p:Lite=${{ matrix.lite }}
