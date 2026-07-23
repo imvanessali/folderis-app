@@ -1,10 +1,15 @@
 #!/bin/bash
-# 公证发布：构建 → 内嵌运行时 → Developer ID 加固签名 → DMG → 公证 → 装订。
+# 单版本公证发布：
+# 构建 → 内嵌运行时 → Developer ID 加固签名 → App 公证/装订
+# → DMG → DMG 公证/装订 → 最终校验。
 # 前置（一次性）：
 #   1. Xcode 里创建 Developer ID Application 证书
 #   2. xcrun notarytool store-credentials notary --apple-id 你的AppleID \
 #        --team-id 2Y5H5X7UQS --password <App专用密码>
-# 用法：RUNTIME_SRC=<scratch目录> ./make_release.sh
+# 用法：
+#   RUNTIME_SRC=<scratch目录> MVP=0 ./make_release.sh  # Full
+#   RUNTIME_SRC=<scratch目录> MVP=1 ./make_release.sh  # Lite
+# 同时发布 Full + Lite 请使用 make_release_matrix.sh。
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -17,6 +22,81 @@ ARCH="${ARCH:-arm64}"   # arm64 | x86_64
 MVP="${MVP:-0}"         # 1 = Folderis Lite（仅 DeepSeek Key）
 APP_VERSION="1.1.0"
 BUILD_VERSION="20260723.1"
+NOTARY_SCRATCH=""
+HELPER_BUILD=""
+BG_BUILD=""
+RW=""
+VOLNAME=""
+
+cleanup_release_scratch() {
+  if [ -n "$VOLNAME" ]; then
+    hdiutil detach "/Volumes/$VOLNAME" -quiet 2>/dev/null || true
+  fi
+  if [ -n "$NOTARY_SCRATCH" ]; then
+    rm -rf "$NOTARY_SCRATCH"
+  fi
+  if [ -n "$HELPER_BUILD" ]; then
+    rm -rf "$HELPER_BUILD"
+  fi
+  if [ -n "$BG_BUILD" ]; then
+    rm -rf "$BG_BUILD"
+  fi
+  if [ -n "$RW" ]; then
+    rm -f "$RW"
+  fi
+}
+trap cleanup_release_scratch EXIT INT TERM
+
+notarize_artifact() {
+  local artifact="$1"
+  local label="$2"
+  local submission_id=""
+  local output=""
+  local status=""
+
+  # 只提交一次拿 ID，然后按 ID 轮询到底。仅上传连接失败时重试，
+  # 避免同一产物重复进入 Apple 队列。
+  for attempt in 1 2 3; do
+    output=$(xcrun notarytool submit "$artifact" --keychain-profile notary 2>&1) || true
+    submission_id=$(printf '%s\n' "$output" | awk '$1 == "id:" { print $2; exit }')
+    [ -n "$submission_id" ] && break
+    echo "$label 上传中断（第 $attempt 次）：$(echo "$output" | tail -1)"
+    sleep 20
+  done
+  [ -n "$submission_id" ] || { echo "$label 上传三次失败"; exit 1; }
+
+  echo "$label 提交 ID: $submission_id"
+  for poll in $(seq 1 240); do
+    status=$(xcrun notarytool info "$submission_id" --keychain-profile notary 2>/dev/null |
+      awk '$1 == "status:" { print $2; exit }' || true)
+    echo "  $label poll $poll: ${status:-noresp}"
+    [ "$status" = "Accepted" ] && break
+    if [ "$status" = "Invalid" ]; then
+      echo "$label 公证被拒，详情："
+      xcrun notarytool log "$submission_id" --keychain-profile notary || true
+      exit 1
+    fi
+    sleep 30
+  done
+  [ "$status" = "Accepted" ] || { echo "$label 公证 2 小时未出结果，中止"; exit 1; }
+}
+
+staple_with_retry() {
+  local artifact="$1"
+  local label="$2"
+
+  # 装订偶发被代理/VPN 掐断 TLS（api.apple-cloudkit.com），自动重试。
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if xcrun stapler staple "$artifact"; then
+      xcrun stapler validate "$artifact"
+      return
+    fi
+    echo "$label staple 失败（第 $attempt 次），30 秒后重试…"
+    sleep 30
+  done
+  echo "$label 装订重试耗尽"
+  exit 68
+}
 case "$ARCH" in
   arm64)  PY_DIR="pyrt/python";     FF_DIR="$RUNTIME_SRC";       DMG_SUFFIX="AppleSilicon" ;;
   x86_64) PY_DIR="pyrt-x64/python"; FF_DIR="$RUNTIME_SRC/intel"; DMG_SUFFIX="Intel" ;;
@@ -29,7 +109,7 @@ if [ "$MVP" = "1" ]; then
   EXTRA_BUILD=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=MVP_DEEPSEEK")
 fi
 
-echo "== 1/6 构建 =="
+echo "== 1/8 构建 =="
 xcodebuild -project FinderSidebar.xcodeproj -scheme FinderSidebarHost -configuration Release \
   -derivedDataPath .xcbuild -allowProvisioningUpdates \
   ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
@@ -59,7 +139,7 @@ if [ "$MVP" = "1" ]; then
   rm -rf "$APP/Contents/PlugIns"
 fi
 
-echo "== 2/6 内嵌运行时 =="
+echo "== 2/8 内嵌运行时 =="
 RT="$APP/Contents/Resources/runtime"
 mkdir -p "$RT/bin" "$RT/skills"
 cp -R "$RUNTIME_SRC/$PY_DIR" "$RT/python"
@@ -85,6 +165,7 @@ xcrun swiftc -O -target x86_64-apple-macosx13.0 skills/pdfrender.swift \
 lipo -create "$HELPER_BUILD/pdfrender-arm64" "$HELPER_BUILD/pdfrender-x86_64" \
   -output "$RUNTIME_SRC/helpers-universal/pdfrender"
 rm -rf "$HELPER_BUILD"
+HELPER_BUILD=""
 
 cp "$RUNTIME_SRC/helpers-universal/"* "$FF_DIR/ffmpeg" "$FF_DIR/ffprobe" "$RT/bin/"
 PNGQUANT="$RUNTIME_SRC/pngquant"
@@ -120,7 +201,7 @@ if [ -d "$APP/Contents/PlugIns/FinderSidebarExt.appex" ]; then
 fi
 date +%Y%m%d%H%M%S > "$RT/VERSION"
 
-echo "== 3/6 签名（全部 Mach-O，加固运行时）=="
+echo "== 3/8 签名（全部 Mach-O，加固运行时）=="
 # 内层：python 的动态库与可执行文件、组件二进制
 find "$RT" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 | \
   xargs -0 -n 20 codesign --force --timestamp -s "$IDENTITY"
@@ -140,9 +221,26 @@ codesign --force --timestamp --options runtime \
 codesign --verify --deep --strict "$APP"
 echo "签名校验通过"
 
-echo "== 4/6 打 DMG =="
+if [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
+  echo "== 4/8 跳过 App 公证（SKIP_NOTARIZE=1）=="
+else
+  echo "== 4/8 App 公证与装订 =="
+  NOTARY_SCRATCH=$(mktemp -d)
+  ditto -c -k --keepParent "$APP" "$NOTARY_SCRATCH/Folderis.zip"
+  notarize_artifact "$NOTARY_SCRATCH/Folderis.zip" "App"
+  rm -rf "$NOTARY_SCRATCH"
+  NOTARY_SCRATCH=""
+  staple_with_retry "$APP" "App"
+  codesign --verify --deep --strict "$APP"
+  spctl --assess --type execute --verbose=2 "$APP"
+fi
+
+echo "== 5/8 打 DMG =="
 DMG="dist/$DMG_NAME.dmg"
-mkdir -p dist/dmgroot && cp -R "$APP" dist/dmgroot/ && ln -s /Applications dist/dmgroot/Applications
+mkdir -p dist/dmgroot
+# ditto 显式保留 App 的扩展属性，其中包含 stapler 写入的公证票据。
+ditto --rsrc --extattr "$APP" "dist/dmgroot/$(basename "$APP")"
+ln -s /Applications dist/dmgroot/Applications
 cp branding/AppIcon.icns dist/dmgroot/.VolumeIcon.icns
 SetFile -a C dist/dmgroot 2>/dev/null || true
 # 安装引导页背景图（纯箭头，无文字，语言中立）；图标布局在最终卷上现场排版
@@ -153,6 +251,7 @@ xcrun swift branding/make_dmg_background.swift \
 tiffutil -cathidpicheck "$BG_BUILD/bg-1x.png" "$BG_BUILD/bg-2x.png" \
   -out dist/dmgroot/.background/bg.tiff >/dev/null
 rm -rf "$BG_BUILD"
+BG_BUILD=""
 # 先出可写镜像 → Finder 现场排版（背景别名必须指向最终卷）→ 转只读压缩
 RW=dist/rw-tmp.dmg
 rm -f "$RW"
@@ -184,47 +283,32 @@ end tell
 LAYOUT
 sync
 hdiutil detach "/Volumes/$VOLNAME" -quiet
+VOLNAME=""
 hdiutil convert "$RW" -format UDZO -o "$DMG" -ov >/dev/null
 rm -f "$RW"
+RW=""
 codesign --force --timestamp -s "$IDENTITY" "$DMG"
 
 if [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
-  echo "== 跳过公证（SKIP_NOTARIZE=1）=="
+  echo "== 6/8 跳过 DMG 公证（SKIP_NOTARIZE=1）=="
+  echo "== 7/8 跳过装订（SKIP_NOTARIZE=1）=="
+  echo "== 8/8 本地校验 =="
+  codesign --verify --deep --strict "$APP"
+  hdiutil verify "$DMG" >/dev/null
   echo "完成：${DMG}（未公证，仅本机测试用）"
   exit 0
 fi
-echo "== 5/6 公证（等待 Apple 审核；队列拥堵时可能较久）=="
-# 只提交一次拿 ID，然后按 ID 轮询到底——重复提交只会重新排队，越交越慢。
-SID=""
-for attempt in 1 2 3; do
-  OUT=$(xcrun notarytool submit "$DMG" --keychain-profile notary 2>&1) || true
-  SID=$(echo "$OUT" | grep -m1 ' id:' | awk '{print $2}')
-  [ -n "$SID" ] && break
-  echo "上传中断（第 $attempt 次）：$(echo "$OUT" | tail -1)"
-  sleep 20
-done
-[ -n "$SID" ] || { echo "上传三次失败"; exit 1; }
-echo "提交 ID: $SID"
-ST=""
-for i in $(seq 1 240); do
-  ST=$(xcrun notarytool info "$SID" --keychain-profile notary 2>/dev/null | grep -m1 'status:' | sed 's/.*status: //')
-  echo "  poll $i: ${ST:-noresp}"
-  [ "$ST" = "Accepted" ] && break
-  if [ "$ST" = "Invalid" ]; then
-    echo "公证被拒，详情："
-    xcrun notarytool log "$SID" --keychain-profile notary || true
-    exit 1
-  fi
-  sleep 30
-done
-[ "$ST" = "Accepted" ] || { echo "2 小时未出结果，中止"; exit 1; }
+echo "== 6/8 DMG 公证（等待 Apple 审核；队列拥堵时可能较久）=="
+notarize_artifact "$DMG" "DMG"
 
-echo "== 6/6 装订 =="
-# 装订偶发被代理/VPN 掐断 TLS（api.apple-cloudkit.com），自动重试
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  if xcrun stapler staple "$DMG"; then break; fi
-  echo "staple 失败（第 $i 次），30 秒后重试…"
-  sleep 30
-  [ "$i" = "10" ] && { echo "装订重试耗尽"; exit 68; }
-done
+echo "== 7/8 DMG 装订 =="
+staple_with_retry "$DMG" "DMG"
+
+echo "== 8/8 最终校验 =="
+xcrun stapler validate "$APP"
+codesign --verify --deep --strict "$APP"
+spctl --assess --type execute --verbose=2 "$APP"
+xcrun stapler validate "$DMG"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+hdiutil verify "$DMG" >/dev/null
 echo "完成：${DMG}（$(du -h "$DMG" | cut -f1)）——可直接分发，下载后双击即用，无任何警告。"
