@@ -25,6 +25,17 @@ open FinderSidebar-Full.app
 
 如果 Gatekeeper 拦截（"无法验证开发者"），右键 App → 打开，确认一次即可。
 
+## macOS 可分发包
+
+发布机准备好 Developer ID、`notary` 钥匙串凭据和完整运行时后，用一个命令同时生成 Full 与 Lite：
+
+```bash
+cd 01-finder-sidebar
+RUNTIME_SRC=/path/to/release-runtime ARCH=arm64 ./make_release_matrix.sh
+```
+
+脚本会依次构建两个版本，并分别完成 App 公证/装订、DMG 公证/装订和 Gatekeeper/映像校验。最终产物和 SHA-256 清单位于 `01-finder-sidebar/dist/`。仅测试构建流程、不提交 Apple 公证时，可增加 `SKIP_NOTARIZE=1`。
+
 ## 使用
 
 - 菜单栏有一个气泡图标：显示/隐藏面板、退出。
