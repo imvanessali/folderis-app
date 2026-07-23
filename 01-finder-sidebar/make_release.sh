@@ -16,7 +16,7 @@ RUNTIME_SRC="${RUNTIME_SRC:?需要 RUNTIME_SRC=<含 pyrt/ helpers/ ffmpeg 的目
 ARCH="${ARCH:-arm64}"   # arm64 | x86_64
 MVP="${MVP:-0}"         # 1 = Folderis Lite（仅 DeepSeek Key）
 APP_VERSION="1.1.0"
-BUILD_VERSION="20260720.1"
+BUILD_VERSION="20260723.1"
 case "$ARCH" in
   arm64)  PY_DIR="pyrt/python";     FF_DIR="$RUNTIME_SRC";       DMG_SUFFIX="AppleSilicon" ;;
   x86_64) PY_DIR="pyrt-x64/python"; FF_DIR="$RUNTIME_SRC/intel"; DMG_SUFFIX="Intel" ;;

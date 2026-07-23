@@ -33,13 +33,13 @@ InstallDirRegKey HKCU "Software\Folderis\${APP_ID}" "InstallDir"
 Icon "${APP_ICON}"
 UninstallIcon "${APP_ICON}"
 
-VIProductVersion "1.1.720.1"
+VIProductVersion "1.1.723.1"
 VIAddVersionKey /LANG=1033 "ProductName" "${APP_NAME}"
 VIAddVersionKey /LANG=1033 "CompanyName" "Folderis"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright 2026 Folderis"
 VIAddVersionKey /LANG=1033 "FileDescription" "${APP_NAME} Setup"
-VIAddVersionKey /LANG=1033 "FileVersion" "1.1.720.1"
-VIAddVersionKey /LANG=1033 "ProductVersion" "1.1.720.1"
+VIAddVersionKey /LANG=1033 "FileVersion" "1.1.723.1"
+VIAddVersionKey /LANG=1033 "ProductVersion" "1.1.723.1"
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "${APP_ICON}"
@@ -102,7 +102,7 @@ Section "Install" SEC_MAIN
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" \
     "DisplayIcon" "$INSTDIR\${APP_EXE}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" \
-    "DisplayVersion" "1.1.720.1"
+    "DisplayVersion" "1.1.723.1"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" \
     "Publisher" "Folderis"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" \

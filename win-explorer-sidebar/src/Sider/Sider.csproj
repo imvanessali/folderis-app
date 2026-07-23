@@ -13,10 +13,10 @@
     <AssemblyName>Folderis</AssemblyName>
     <RootNamespace>Sider</RootNamespace>
     <ApplicationIcon>Assets/app.ico</ApplicationIcon>
-    <Version>1.1.720.1</Version>
+    <Version>1.1.723.1</Version>
     <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.720.1</FileVersion>
-    <InformationalVersion>1.1.720.1+20260720.1</InformationalVersion>
+    <FileVersion>1.1.723.1</FileVersion>
+    <InformationalVersion>1.1.723.1+20260723.1</InformationalVersion>
   </PropertyGroup>
   <!-- Lite 变体：dotnet build -p:Lite=true → 仅 DeepSeek Key -->
   <PropertyGroup Condition="'$(Lite)' == 'true'">
