@@ -1231,18 +1231,148 @@ def cmd_av_compress(a):
     ok(f"已压缩 {len(files)} 个视频（crf={a.crf}）")
 
 
-def cmd_av_merge(a):
-    ff = ffmpeg_or_die()
-    files = expand(a.files)
-    out = available_output(Path(a.output), explicit=True)
+def _probe_media(path):
+    """ffprobe JSON 探测：返回 (时长, 视频流, 音频流)；ffprobe 缺失时返回 None。"""
+    if not Path(FFPROBE).exists():
+        return None
+    r = subprocess.run([FFPROBE, "-v", "error", "-print_format", "json",
+                        "-show_format", "-show_streams", str(path)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"无法读取媒体信息：{Path(path).name}\n{r.stderr[-400:]}")
+    data = json.loads(r.stdout or "{}")
+    try:
+        duration = float(data.get("format", {}).get("duration"))
+    except (TypeError, ValueError):
+        duration = None
+    streams = data.get("streams", [])
+    videos = [s for s in streams if s.get("codec_type") == "video"
+              and not s.get("disposition", {}).get("attached_pic")]
+    audios = [s for s in streams if s.get("codec_type") == "audio"]
+    return duration, videos, audios
+
+
+def _merge_signature(probe):
+    """copy 拼接是否安全，取决于各段编码/尺寸/帧率/时基/采样率完全一致。"""
+    _, videos, audios = probe
+    v = videos[0] if videos else None
+    a = audios[0] if audios else None
+    return (
+        (v.get("codec_name"), v.get("width"), v.get("height"), v.get("pix_fmt"),
+         v.get("avg_frame_rate"), v.get("time_base")) if v else None,
+        (a.get("codec_name"), a.get("sample_rate"), a.get("channels")) if a else None,
+    )
+
+
+def _fps_of(stream):
+    rate = stream.get("avg_frame_rate") or "0/1"
+    try:
+        num, _, den = rate.partition("/")
+        value = float(num) / float(den or 1)
+    except (ValueError, ZeroDivisionError):
+        return None, rate
+    return (value, rate) if value > 0 else (None, rate)
+
+
+def _merge_duration_ok(out, expected):
+    """合并产物时长必须≈输入总时长；无法探测（无 ffprobe/无总时长）时不拦截。"""
+    if expected is None:
+        return True
+    probe = _probe_media(out)
+    if probe is None or probe[0] is None:
+        return True
+    return abs(probe[0] - expected) <= max(0.5, expected * 0.02)
+
+
+def _av_merge_copy(ff, files, out):
     lst = Path(tempfile.gettempdir()) / f"folderis-concat-{uuid.uuid4().hex}.txt"
     lst.write_text("\n".join(f"file '{Path(f).resolve()}'" for f in files), encoding="utf-8")
     try:
         run([ff, "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(out)])
-    except SystemExit:
-        run([ff, "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c:v", "libx264", "-c:a", "aac", str(out)])
     finally:
         lst.unlink(missing_ok=True)
+
+
+def _av_merge_reencode(ff, files, probes, out):
+    """concat 滤镜重编码：统一分辨率/帧率/时基后拼接，正确处理混合参数输入。"""
+    n = len(files)
+    has_video = all(p[1] for p in probes)
+    use_audio = all(p[2] for p in probes)
+    if not has_video and not use_audio:
+        die("这些片段既无统一的视频流也无统一的音频流，无法拼接")
+    cmd = [ff, "-y"]
+    for f in files:
+        cmd += ["-i", str(f)]
+    parts, chain = [], ""
+    if has_video:
+        v0 = probes[0][1][0]
+        w, h = v0.get("width"), v0.get("height")
+        fps_values = [_fps_of(p[1][0]) for p in probes]
+        fps = max(fps_values, key=lambda item: item[0] or 0)[1] if any(v for v, _ in fps_values) else "30"
+        for i in range(n):
+            parts.append(
+                f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p,setsar=1,"
+                f"setpts=PTS-STARTPTS[v{i}]")
+    if use_audio:
+        for i in range(n):
+            parts.append(f"[{i}:a]aformat=sample_fmts=fltp:channel_layouts=stereo,"
+                         f"aresample=48000,asetpts=PTS-STARTPTS[a{i}]")
+    for i in range(n):
+        chain += (f"[v{i}]" if has_video else "") + (f"[a{i}]" if use_audio else "")
+    labels = ("[v]" if has_video else "") + ("[a]" if use_audio else "")
+    parts.append(f"{chain}concat=n={n}:v={int(has_video)}:a={int(use_audio)}{labels}")
+    cmd += ["-filter_complex", ";".join(parts)]
+    if has_video:
+        cmd += ["-map", "[v]", "-c:v", "libx264", "-crf", "18", "-preset", "medium"]
+    if use_audio:
+        cmd += ["-map", "[a]"]
+        if has_video:
+            cmd += ["-c:a", "aac", "-b:a", "192k"]
+    run(cmd + [str(out)])
+
+
+def cmd_av_merge(a):
+    ff = ffmpeg_or_die()
+    files = expand(a.files)
+    out = available_output(Path(a.output), explicit=True)
+    probes = [_probe_media(f) for f in files]
+    if any(p is None for p in probes):
+        # 无 ffprobe：退回 copy 拼接，失败时重编码（无法校验时长）
+        try:
+            _av_merge_copy(ff, files, out)
+        except SystemExit:
+            lst = Path(tempfile.gettempdir()) / f"folderis-concat-{uuid.uuid4().hex}.txt"
+            lst.write_text("\n".join(f"file '{Path(f).resolve()}'" for f in files), encoding="utf-8")
+            try:
+                run([ff, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                     "-c:v", "libx264", "-c:a", "aac", str(out)])
+            finally:
+                lst.unlink(missing_ok=True)
+        ok(f"已合并 {len(files)} 段 → {out}")
+        return
+
+    durations = [p[0] for p in probes]
+    expected = sum(durations) if all(d is not None for d in durations) else None
+    uniform = len({_merge_signature(p) for p in probes}) == 1
+    merged = False
+    if uniform:
+        try:
+            _av_merge_copy(ff, files, out)
+            merged = _merge_duration_ok(out, expected)
+        except SystemExit:
+            merged = False
+        if not merged:
+            out.unlink(missing_ok=True)
+    if not merged:
+        # 编码/帧率/时基不一致（或 copy 拼接时长不对）：重编码拼接
+        _av_merge_reencode(ff, files, probes, out)
+        if not _merge_duration_ok(out, expected):
+            actual = _probe_media(out)[0]
+            out.unlink(missing_ok=True)
+            die(f"合并结果时长 {actual:.3f}s 与输入总时长 {expected:.3f}s 不符，已中止并删除产物")
+    if all(p[1] for p in probes) and not all(p[2] for p in probes) and any(p[2] for p in probes):
+        print("提示：部分片段没有音轨，合并结果不含音频")
     ok(f"已合并 {len(files)} 段 → {out}")
 
 
@@ -3151,6 +3281,25 @@ def _strict_local_plan(request, files):
                 args += ["--output", str(output)]
             return {"skill": "pdf-split", "args": args,
                     "stage": f"抽取 PDF 第 {page} 页"}
+
+    if (exts <= video_exts
+            and any(k in text for k in ["压缩", "压小", "压一下", "压成", "compress"])
+            and not any(k in text for k in [
+                "gif", "截", "剪", "trim", "转", "convert", "提取", "extract",
+                "字幕", "subtitle", "帧", "frame",
+                "打包", "压缩包", "归档", "加密", "zip", "archive", "密码", "password",
+            ])):
+        crf = _route_number(text, [r"crf\s*(\d+)"], int) or 28
+        width = _route_number(
+            text, [r"(?:宽|宽度)\s*(\d+)\s*(?:px|像素)?",
+                   r"(?:width|wide)\s*(?:of\s*)?(\d+)\s*(?:px|pixels?)?"], int)
+        if not width:
+            res = _route_number(text, [r"(\d{3,4})\s*p\b"], int)
+            width = {2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640}.get(res)
+        args = [*map(str, paths), "--crf", str(crf)]
+        if width:
+            args += ["--width", str(width)]
+        return {"skill": "av-compress", "args": args, "stage": "压缩视频"}
 
     if exts <= video_exts and "gif" in text:
         duration = _route_number(text, [r"前\s*(\d+(?:\.\d+)?)\s*秒", r"first\s+(\d+(?:\.\d+)?)\s*(?:s|sec|seconds?)\b"])

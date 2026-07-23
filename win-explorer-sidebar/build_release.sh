@@ -11,6 +11,33 @@ case "$INSTALLER_MODE" in
   *) echo "INSTALLER_MODE must be auto, nsis, or dotnet"; exit 1 ;;
 esac
 
+# Authenticode 签名（QA 2026-07-23 D3）：提供 FOLDERIS_SIGN_PFX（.pfx 路径）
+# 和 FOLDERIS_SIGN_PASSWORD 即对内部 App EXE 与安装器签名；
+# FOLDERIS_SIGN_REQUIRE=1 时缺证书直接失败（发布件必须签名）。
+SIGN_PFX="${FOLDERIS_SIGN_PFX:-}"
+SIGN_PASSWORD="${FOLDERIS_SIGN_PASSWORD:-}"
+SIGN_TIMESTAMP_URL="${FOLDERIS_SIGN_TIMESTAMP_URL:-http://timestamp.digicert.com}"
+SIGN_REQUIRE="${FOLDERIS_SIGN_REQUIRE:-0}"
+if [ -n "$SIGN_PFX" ]; then
+  [ -f "$SIGN_PFX" ] || { echo "FOLDERIS_SIGN_PFX not found: $SIGN_PFX" >&2; exit 1; }
+  command -v osslsigncode >/dev/null || { echo "Missing osslsigncode: brew install osslsigncode" >&2; exit 1; }
+elif [ "$SIGN_REQUIRE" = "1" ]; then
+  echo "FOLDERIS_SIGN_REQUIRE=1 but FOLDERIS_SIGN_PFX is not set; release artifacts must be Authenticode signed." >&2
+  exit 1
+fi
+
+sign_file() {
+  local file="$1"
+  [ -n "$SIGN_PFX" ] || return 0
+  osslsigncode sign -pkcs12 "$SIGN_PFX" ${SIGN_PASSWORD:+-pass "$SIGN_PASSWORD"} \
+    -n "Folderis" -i "https://folderis.app" \
+    -t "$SIGN_TIMESTAMP_URL" -h sha256 \
+    -in "$file" -out "$file.signed"
+  mv "$file.signed" "$file"
+  osslsigncode verify -in "$file" >/dev/null
+  echo "Signed: $file"
+}
+
 PROJECT="src/Sider/Sider.csproj"
 DIST="dist"
 RID="win-x64"
@@ -82,10 +109,14 @@ build_dotnet_setup() {
 
 publish_app "$DIST/full-$RID"
 publish_app "$DIST/lite-$RID" -p:Lite=true
+sign_file "$DIST/full-$RID/Folderis.exe"
+sign_file "$DIST/lite-$RID/Folderis Lite.exe"
 
 if [ "$INSTALLER_MODE" != "dotnet" ] && [ -x "$MAKENSIS" ]; then
   if build_setup "$DIST/full-$RID" "Folderis-Setup" "Folderis" "Folderis.exe" "Folderis" && \
      build_setup "$DIST/lite-$RID" "Folderis-Lite-Setup" "Folderis Lite" "Folderis Lite.exe" "FolderisLite"; then
+    sign_file "$DIST/Folderis-Setup.exe"
+    sign_file "$DIST/Folderis-Lite-Setup.exe"
     echo "Built NSIS installers."
   elif [ "$INSTALLER_MODE" = "nsis" ]; then
     echo "NSIS installer build failed." >&2
@@ -105,6 +136,16 @@ fi
 if [ "$INSTALLER_MODE" = "dotnet" ]; then
   build_dotnet_setup "$DIST/full-$RID" "Folderis-Setup" "Folderis-Setup" ".setup-build/full"
   build_dotnet_setup "$DIST/lite-$RID" "Folderis-Lite-Setup" "Folderis-Lite-Setup" ".setup-build/lite"
+  sign_file "$DIST/Folderis-Setup.exe"
+  sign_file "$DIST/Folderis-Lite-Setup.exe"
+fi
+
+if [ -z "$SIGN_PFX" ]; then
+  echo "" >&2
+  echo "⚠️  UNSIGNED BUILD: installers and app EXEs have no Authenticode signature" >&2
+  echo "   and will trigger Unknown Publisher / SmartScreen warnings." >&2
+  echo "   Set FOLDERIS_SIGN_PFX / FOLDERIS_SIGN_PASSWORD to sign release artifacts" >&2
+  echo "   (FOLDERIS_SIGN_REQUIRE=1 makes signing mandatory)." >&2
 fi
 
 echo "Windows release artifacts are in $DIST"
