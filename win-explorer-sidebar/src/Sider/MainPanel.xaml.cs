@@ -228,11 +228,31 @@ public partial class MainPanel : Window
                           "Stored encrypted on this machine (Windows DPAPI)."),
             FontSize = 11, Foreground = System.Windows.Media.Brushes.Gray, Margin = new Thickness(0, 0, 0, 10)
         };
+        var getKeyLink = new System.Windows.Documents.Hyperlink(
+            new System.Windows.Documents.Run(L10n.T("获取 API Key →", "Get API Key →")))
+        {
+            NavigateUri = new Uri("https://platform.deepseek.com/api_keys")
+        };
+        getKeyLink.RequestNavigate += (_, e) =>
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.Uri.AbsoluteUri)
+            { UseShellExecute = true });
+            e.Handled = true;
+        };
+        var keyHeader = new Grid();
+        keyHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        keyHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        keyHeader.Children.Add(new SelectableText { Text = "DeepSeek API Key", FontWeight = FontWeights.SemiBold });
+        var getKeyText = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+        getKeyText.Inlines.Add(getKeyLink);
+        Grid.SetColumn(getKeyText, 1);
+        keyHeader.Children.Add(getKeyText);
         var keySection = new StackPanel
         {
+            Margin = new Thickness(24, 6, 0, 0),
             Children =
             {
-                new SelectableText { Text = "DeepSeek API Key", FontWeight = FontWeights.SemiBold },
+                keyHeader,
                 input,
                 hint
             }
@@ -276,11 +296,12 @@ public partial class MainPanel : Window
             rbCodex.IsChecked = selectedBackend == "Codex";
             rbDeepSeek.IsChecked = selectedBackend == "BuiltinApi";
             keySection.Visibility = selectedBackend == "BuiltinApi" ? Visibility.Visible : Visibility.Collapsed;
+            caption.Visibility = selectedBackend == "BuiltinApi" ? Visibility.Collapsed : Visibility.Visible;
             caption.Text = selectedBackend switch
             {
                 "ClaudeCode" => L10n.T("复用你的 Claude 订阅，无需额外付费", "Reuse your Claude subscription at no additional cost"),
                 "Codex" => L10n.T("复用你的 Codex 订阅，无需额外付费", "Reuse your Codex subscription at no additional cost"),
-                _ => L10n.T("直连 DeepSeek API，需填写下方 Key。", "Connects directly to DeepSeek; enter the key below.")
+                _ => ""
             };
         }
 
@@ -315,10 +336,13 @@ public partial class MainPanel : Window
         content.Children.Add(BackendRow(rbClaude, retryClaude));
         content.Children.Add(BackendRow(rbCodex, retryCodex));
         content.Children.Add(rbDeepSeek);
+        content.Children.Add(keySection);
         content.Children.Add(caption);
         RefreshDetection();
-#endif
+#else
+        keySection.Margin = new Thickness(0);
         content.Children.Add(keySection);
+#endif
 
         var save = new Button { Content = L10n.T("保存", "Save"), Width = 88, Margin = new Thickness(0, 0, 8, 0) };
         var quit = new Button { Content = L10n.T($"退出 {ProductInfo.Name}", $"Quit {ProductInfo.Name}"), Width = 110,

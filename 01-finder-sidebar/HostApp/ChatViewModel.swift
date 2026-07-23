@@ -724,7 +724,7 @@ final class ChatViewModel: ObservableObject {
         process.arguments = args
         process.currentDirectoryURL = cwd
         // 干净环境：去掉嵌套会话/API Key 类变量，避免干扰 CLI 自身认证。
-        var env = ProcessInfo.processInfo.environment
+        var env = BackendKind.environmentForCLI(at: cliPath)
         for key in env.keys where key.hasPrefix("ANTHROPIC_") || key.hasPrefix("CLAUDE") || key.hasPrefix("OPENAI_") {
             env.removeValue(forKey: key)
         }
@@ -771,18 +771,18 @@ final class ChatViewModel: ObservableObject {
         process.waitUntilExit()
         let stderrText = await stderrTask.value.trimmingCharacters(in: .whitespacesAndNewlines)
         if let streamedFailure {
-            throw APIError.server(status: Int(process.terminationStatus), body: streamedFailure)
+            throw APIError.cli(exitCode: Int(process.terminationStatus), body: streamedFailure)
         }
         if process.terminationStatus != 0 {
             let detail = stderrText.isEmpty
                 ? L("进程异常退出", "process exited unexpectedly")
                 : String(stderrText.prefix(500))
-            throw APIError.server(status: Int(process.terminationStatus),
-                                  body: "\(backend.displayName): \(detail)")
+            throw APIError.cli(exitCode: Int(process.terminationStatus),
+                               body: "\(backend.displayName): \(detail)")
         }
         if !completedNormally {
-            throw APIError.server(
-                status: 0,
+            throw APIError.cli(
+                exitCode: nil,
                 body: L("\(backend.displayName) 未正常完成任务，请重试。已显示的内容只是中间进度，不代表文件已生成。",
                         "\(backend.displayName) did not complete normally. Retry the task; any text shown above was progress, not a completed file."))
         }
@@ -2497,6 +2497,7 @@ final class ChatViewModel: ObservableObject {
 enum APIError: Error {
     case badURL
     case server(status: Int, body: String)
+    case cli(exitCode: Int?, body: String)
 
     var message: String {
         switch self {
@@ -2505,6 +2506,13 @@ enum APIError: Error {
         case .server(let status, let body):
             let trimmed = body.count > 300 ? String(body.prefix(300)) + "…" : body
             return "请求失败（HTTP \(status)）：\(trimmed)"
+        case .cli(let exitCode, let body):
+            let trimmed = body.count > 300 ? String(body.prefix(300)) + "…" : body
+            if let exitCode {
+                return L("命令执行失败（退出码 \(exitCode)）：\(trimmed)",
+                         "Command failed (exit code \(exitCode)): \(trimmed)")
+            }
+            return L("命令执行失败：\(trimmed)", "Command failed: \(trimmed)")
         }
     }
 }
