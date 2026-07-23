@@ -43,6 +43,7 @@ struct OnboardingView: View {
     // 权限状态，进入授权页后轮询刷新。
     @State private var axGranted = AXIsProcessTrusted()
     @State private var automationGranted: Bool? = nil
+    @State private var automationProbeInFlight = false
     private let pollTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -87,30 +88,47 @@ struct OnboardingView: View {
     }
 
     private var welcomePage: some View {
-        VStack(spacing: 10) {
-            BrandLogoView(size: 160)
-                .padding(.top, 24)
-                .padding(.bottom, 4)
+        VStack(spacing: 0) {
+            BrandLogoView(size: 150)
+                .padding(.top, 16)
+
+            // 标题：唯一的黑色粗体，视觉锚点。
             Text(L("欢迎使用 Folderis", "Welcome to Folderis"))
-                .font(.system(size: 26, weight: .bold))
+                .font(.system(size: 28, weight: .bold))
+                .padding(.top, 24)
+
+            // 导语：深色中等字重，与下方灰色正文拉开层次。
             Text(L("在访达窗口旁边放一个 AI 助手：选中文件，直接说你想做什么。",
                    "An AI assistant sits beside your Finder window. Select files and say what you want."))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.primary.opacity(0.75))
                 .multilineTextAlignment(.center)
+                .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 12)
+                .padding(.horizontal, 8)
+
+            // 正文：常规灰色说明。
             Text(L("支持60+种常见办公操作，压缩、转换、比较、整理、批量操作等等，如果没有命中内置的技能，AI可以当场写代码完成任务。",
                    "Folderis supports 60+ common office tasks, including compression, conversion, comparison, organization, and batch operations. If no built-in skill matches, AI can write code on the spot."))
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 16)
+                .padding(.horizontal, 12)
+
+            // 脚注：最浅、最小，仅作提醒。
             Text(L("不建议做逻辑特别复杂，人工难以验证的任务，Folderis主打轻量和便捷。",
                    "Avoid highly complex tasks that are difficult to verify manually. Folderis is designed for lightweight, convenient work."))
-                .font(.system(size: 12))
+                .font(.system(size: 11.5))
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
+                .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 14)
+                .padding(.horizontal, 28)
         }
     }
 
@@ -440,12 +458,15 @@ struct OnboardingView: View {
 
     /// 探测自动化权限；prompting 为 true 时的首次调用会触发系统授权弹窗。
     private func probeAutomation(prompting: Bool) {
+        guard !automationProbeInFlight else { return }
+        automationProbeInFlight = true
         DispatchQueue.global(qos: .userInitiated).async {
             let script = NSAppleScript(source: "tell application \"Finder\" to count windows")
             var error: NSDictionary?
             _ = script?.executeAndReturnError(&error)
             let ok = (error == nil)
             DispatchQueue.main.async {
+                automationProbeInFlight = false
                 // 非请求式轮询里，拿不到结果就保持未知，不把已授权改回未授权。
                 if ok { automationGranted = true }
                 else if prompting { automationGranted = false }
