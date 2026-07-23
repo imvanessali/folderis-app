@@ -194,9 +194,25 @@ public sealed class OnboardingWindow : Window
     {
         var panel = PageStack();
         panel.Children.Add(Text("DeepSeek API Key", 23, FontWeights.Bold));
-        panel.Children.Add(Text(L10n.T(
-            "填入 API Key 后即可使用。可在 platform.deepseek.com 获取。",
-            "Enter your API key from platform.deepseek.com."), 13));
+        var link = new System.Windows.Documents.Hyperlink(
+            new System.Windows.Documents.Run(L10n.T("获取 API Key →", "Get API Key →")))
+        {
+            NavigateUri = new Uri("https://platform.deepseek.com/api_keys")
+        };
+        link.RequestNavigate += (_, e) =>
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.Uri.AbsoluteUri)
+            { UseShellExecute = true });
+            e.Handled = true;
+        };
+        var linkBlock = new TextBlock
+        {
+            FontSize = 13,
+            TextAlignment = TextAlignment.Center,
+            Margin = new Thickness(0, 5, 0, 5)
+        };
+        linkBlock.Inlines.Add(link);
+        panel.Children.Add(linkBlock);
         panel.Children.Add(_keyBox);
         panel.Children.Add(Text(L10n.T(
             "API Key 使用 Windows DPAPI 加密保存在当前电脑，不会明文写入磁盘。",

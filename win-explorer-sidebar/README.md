@@ -27,6 +27,21 @@ MainPanel (WPF)          聊天面板：气泡流 / 输入条 / 设置
    - `skills\`：拷贝 macOS 仓库 `01-finder-sidebar/skills/` 下的 `skills.py` 与 `catalog.txt`
    - `bin\`：win 版 [ffmpeg](https://www.gyan.dev/ffmpeg/builds/)、[pngquant](https://pngquant.org/)
 
+## 在 macOS 上交叉编译
+
+交叉编译会检查 Windows/WPF 代码能否通过编译，但不能在 macOS 上运行或验证界面、
+Explorer 集成和 DPAPI。发布前仍需在 Windows 真机冒烟测试。
+
+```bash
+./win-explorer-sidebar/install_mac_cross_sdk.sh
+./win-explorer-sidebar/build_on_mac.sh
+```
+
+安装脚本从 Microsoft 下载固定版本并校验 SHA-512，然后解包到
+`~/.dotnet-folderis`；不需要 sudo，也不会覆盖已有的 `~/.dotnet`。构建脚本会依次
+编译 Folderis Full 和 Lite。GitHub Actions 的 `Windows Build` 工作流会在真实
+`windows-latest` runner 上执行同样的双变体编译门禁。
+
 ## 移植状态表
 
 | 能力 | 状态 | 备注 |

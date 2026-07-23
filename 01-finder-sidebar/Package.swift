@@ -12,6 +12,11 @@ let package = Package(
             name: "FinderSidebarPanel",
             path: "HostApp",
             exclude: ["Info.plist", "HostApp.entitlements"]
+        ),
+        .testTarget(
+            name: "FinderSidebarPanelTests",
+            dependencies: ["FinderSidebarPanel"],
+            path: "SwiftTests"
         )
     ]
 )
