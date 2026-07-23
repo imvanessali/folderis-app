@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let finderContext = FinderContext()
     private let tracker = FinderWindowTracker()
     private var panelController: FloatingPanelController?
+    private var finderServicesStarted = false
     private var instanceLockFD: Int32 = -1
 
     private let toggleNotificationName = NSNotification.Name("com.local.findersidebar.togglePanel")
@@ -139,8 +140,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             finderContext: finderContext,
             tracker: tracker
         )
-        tracker.start()
-        finderContext.start()
+        if !Onboarding.needed {
+            startFinderServices()
+        }
         panelController?.show()
 
         DistributedNotificationCenter.default().addObserver(
@@ -166,9 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = OnboardingView(settings: settings) { [weak self] in
             self?.onboardingWindow?.close()
             self?.onboardingWindow = nil
-            // 引导里刚授权的辅助功能要重启追踪才生效。
-            self?.tracker.stop()
-            self?.tracker.start()
+            self?.startFinderServices()
         }
         let hosting = NSHostingController(rootView: view)
         // 无边框 + 自绘圆角（同面板做法）：一开始就以 borderless 创建，
@@ -192,6 +192,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Finder tracking sends permission-sensitive AX and Apple Events requests.
+    /// Keep both services stopped until onboarding reaches and completes its
+    /// permissions flow so no system consent dialog covers an earlier page.
+    private func startFinderServices() {
+        guard !finderServicesStarted else { return }
+        finderServicesStarted = true
+        tracker.start()
+        finderContext.start()
     }
 
     /// Accessory apps have no menu bar, so the standard Cmd+X/C/V/A shortcuts

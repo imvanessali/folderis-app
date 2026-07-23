@@ -2,14 +2,15 @@
 
 import AppKit
 
-guard CommandLine.arguments.count == 4 else {
-    fputs("usage: make_dmg_background.swift PRODUCT OUTPUT_1X OUTPUT_2X\n", stderr)
+guard CommandLine.arguments.count == 3 else {
+    fputs("usage: make_dmg_background.swift OUTPUT_1X OUTPUT_2X\n", stderr)
     exit(2)
 }
 
-let product = CommandLine.arguments[1]
-let output1x = URL(fileURLWithPath: CommandLine.arguments[2])
-let output2x = URL(fileURLWithPath: CommandLine.arguments[3])
+// DMG 背景是静态图，无法在用户打开时检测系统语言，
+// 所以完全不放文字：App 图标 → 箭头 → Applications，手势全球通用。
+let output1x = URL(fileURLWithPath: CommandLine.arguments[1])
+let output2x = URL(fileURLWithPath: CommandLine.arguments[2])
 
 func render(scale: CGFloat, output: URL) throws {
     let width = Int(700 * scale)
@@ -38,40 +39,10 @@ func render(scale: CGFloat, output: URL) throws {
     NSColor(calibratedRed: 0.988, green: 0.984, blue: 0.992, alpha: 1).setFill()
     NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
 
-    func drawCentered(
-        _ text: String,
-        y: CGFloat,
-        size: CGFloat,
-        weight: NSFont.Weight,
-        color: NSColor
-    ) {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: size * scale, weight: weight),
-            .foregroundColor: color,
-            .paragraphStyle: paragraph,
-        ]
-        let rect = NSRect(
-            x: 24 * scale,
-            y: y * scale,
-            width: CGFloat(width) - 48 * scale,
-            height: (size + 8) * scale
-        )
-        (text as NSString).draw(in: rect, withAttributes: attributes)
-    }
-
-    let primary = NSColor(calibratedRed: 0.11, green: 0.12, blue: 0.15, alpha: 1)
-    let secondary = NSColor(calibratedRed: 0.40, green: 0.42, blue: 0.47, alpha: 1)
-    drawCentered("安装：将 \(product) 拖入“应用程序”", y: 354, size: 17, weight: .semibold, color: primary)
-    drawCentered("Install: drag \(product) to Applications", y: 326, size: 14, weight: .medium, color: secondary)
-    drawCentered("拖完后，到“应用程序”中双击打开 \(product)", y: 49, size: 13, weight: .medium, color: primary)
-    drawCentered("Then open Applications and double-click \(product)", y: 25, size: 11.5, weight: .regular, color: secondary)
-
     let arrowColors = [
         NSColor(calibratedRed: 0.82, green: 0.84, blue: 0.88, alpha: 1),
         NSColor(calibratedRed: 0.58, green: 0.60, blue: 0.65, alpha: 1),
-        primary,
+        NSColor(calibratedRed: 0.11, green: 0.12, blue: 0.15, alpha: 1),
     ]
     for (index, color) in arrowColors.enumerated() {
         let centerX = CGFloat(323 + index * 27) * scale

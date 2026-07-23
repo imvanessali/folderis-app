@@ -145,10 +145,10 @@ DMG="dist/$DMG_NAME.dmg"
 mkdir -p dist/dmgroot && cp -R "$APP" dist/dmgroot/ && ln -s /Applications dist/dmgroot/Applications
 cp branding/AppIcon.icns dist/dmgroot/.VolumeIcon.icns
 SetFile -a C dist/dmgroot 2>/dev/null || true
-# 安装引导页背景图（箭头+虚线框）；图标布局在最终卷上现场排版
+# 安装引导页背景图（纯箭头，无文字，语言中立）；图标布局在最终卷上现场排版
 mkdir -p dist/dmgroot/.background
 BG_BUILD=$(mktemp -d)
-xcrun swift branding/make_dmg_background.swift "$VOLNAME" \
+xcrun swift branding/make_dmg_background.swift \
   "$BG_BUILD/bg-1x.png" "$BG_BUILD/bg-2x.png"
 tiffutil -cathidpicheck "$BG_BUILD/bg-1x.png" "$BG_BUILD/bg-2x.png" \
   -out dist/dmgroot/.background/bg.tiff >/dev/null
