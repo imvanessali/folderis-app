@@ -21,7 +21,7 @@ RUNTIME_SRC="${RUNTIME_SRC:?需要 RUNTIME_SRC=<含 pyrt/ helpers/ ffmpeg 的目
 ARCH="${ARCH:-arm64}"   # arm64 | x86_64
 MVP="${MVP:-0}"         # 1 = Folderis Lite（仅 DeepSeek Key）
 APP_VERSION="1.1.0"
-BUILD_VERSION="20260724.1"
+BUILD_VERSION="20260724.2"
 NOTARY_SCRATCH=""
 HELPER_BUILD=""
 BG_BUILD=""
