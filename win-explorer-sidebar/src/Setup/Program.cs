@@ -28,10 +28,7 @@ static class Setup
     [STAThread]
     static void Main()
     {
-        string assemblyName = Assembly.GetExecutingAssembly().GetName().Name ?? "Folderis-Setup";
-        string appName = assemblyName.StartsWith("Folderis-Lite-Setup", StringComparison.OrdinalIgnoreCase)
-            ? "Folderis Lite"
-            : "Folderis";
+        string appName = "Folderis";
         string installDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Programs", appName);
@@ -59,9 +56,7 @@ static class Setup
             using (var zip = new ZipArchive(res, ZipArchiveMode.Read))
                 zip.ExtractToDirectory(stagingDir);
 
-            string expectedExe = Path.Combine(stagingDir,
-                appName.Equals("Folderis Lite", StringComparison.OrdinalIgnoreCase)
-                    ? "Folderis Lite.exe" : "Folderis.exe");
+            string expectedExe = Path.Combine(stagingDir, "Folderis.exe");
             string stagedExe = File.Exists(expectedExe)
                 ? expectedExe
                 : Directory.GetFiles(stagingDir, "*.exe", SearchOption.TopDirectoryOnly)
@@ -70,7 +65,7 @@ static class Setup
                     ?? throw new InvalidDataException("安装内容中找不到 Folderis.exe / Folderis.exe is missing");
             Log($"Payload verified. App={stagedExe}; bytes={new FileInfo(stagedExe).Length}");
 
-            foreach (var name in new[] { "Folderis Lite", "Folderis", "ExplorerSidebarLite", "ExplorerSidebar" })
+            foreach (var name in new[] { "Folderis", "ExplorerSidebar" })
             {
                 foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
                 {

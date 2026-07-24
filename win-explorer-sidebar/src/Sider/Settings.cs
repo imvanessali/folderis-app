@@ -46,7 +46,7 @@ public sealed class Settings
             }
         }
         catch { /* 损坏配置按空处理 */ }
-        // Full 与 Lite 的 API 路径都固定为 DeepSeek；Full 仅额外开放 CLI 后端。
+        // API 路径固定为 DeepSeek；另开放 CLI 后端。
         s.BaseUrl = DeepSeekBaseUrl;
         s.Model = DeepSeekModel;
         return s;

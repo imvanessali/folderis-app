@@ -24,16 +24,8 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.name }}
+    name: Folderis
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Folderis Full
-            lite: "false"
-          - name: Folderis Lite
-            lite: "true"
 
     steps:
       - name: Check out source
@@ -52,4 +44,3 @@ jobs:
           dotnet build win-explorer-sidebar/src/Sider/Sider.csproj
           --configuration Release
           --no-restore
-          -p:Lite=${{ matrix.lite }}

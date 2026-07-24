@@ -206,7 +206,7 @@ final class AppSettings: ObservableObject {
     }
 
     init() {
-        // Full 与 Lite 的 API 路径都只支持 DeepSeek；Full 额外支持 CLI 后端。
+        // API 路径只支持 DeepSeek；另支持 CLI 后端。
         let savedProvider = APIProvider.deepSeek
         self.provider = savedProvider
         self.baseURL = savedProvider.defaultBaseURL
@@ -223,12 +223,8 @@ final class AppSettings: ObservableObject {
         self.apiKey = KeychainHelper.load(account: savedProvider.rawValue) ?? ""
         let savedMode = UserDefaults.standard.string(forKey: "approvalMode") ?? ""
         self.approvalMode = ApprovalMode(rawValue: savedMode) ?? .ask
-        #if MVP_DEEPSEEK
-        self.backend = .builtinAPI
-        #else
         let savedBackend = UserDefaults.standard.string(forKey: "backend") ?? ""
         self.backend = BackendKind(rawValue: savedBackend) ?? .builtinAPI
-        #endif
         refreshCLIDetection()
     }
 

@@ -27,7 +27,7 @@ open FinderSidebar-Full.app
 
 ## macOS 可分发包
 
-发布机准备好 Developer ID、`notary` 钥匙串凭据和完整运行时后，用一个命令同时生成 Full 与 Lite：
+发布机准备好 Developer ID、`notary` 钥匙串凭据和完整运行时后，用一个命令生成可分发 DMG：
 
 ```bash
 cd 01-finder-sidebar

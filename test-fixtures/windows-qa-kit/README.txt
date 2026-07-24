@@ -1,14 +1,13 @@
 Folderis Windows QA 工具包
 ==========================
-前置：已安装最新 Folderis(-Lite)-Setup.exe 并完成运行时安装（ffmpeg 也装好）。
+前置：已安装最新 Folderis-Setup.exe 并完成运行时安装（ffmpeg 也装好）。
 
 步骤：
 1. 把 test-fixtures 里的 7 个 "Test *" 素材文件夹复制成一个测试副本目录
    （例如 C:\Users\你\Downloads\Test Folderis）。不要直接在母本上测。
-2. PowerShell 运行（明确指定要测 Full 或 Lite，避免两版同时安装时测错）：
-   python run_qa_windows.py --edition full "C:\Users\你\Downloads\Test Folderis"
-   python run_qa_windows.py --edition lite "C:\Users\你\Downloads\Test Folderis"
-   （脚本定位该版本安装目录里的 runtime，缺失时才按 App 规则回退，并打印所用 skills.py 的哈希）
+2. PowerShell 运行：
+   python run_qa_windows.py "C:\Users\你\Downloads\Test Folderis"
+   （脚本定位安装目录里的 runtime，缺失时才按 App 规则回退，并打印所用 skills.py 的哈希）
 3. 结束后把 qa-windows-results.json 发回（尤其有 FAIL 时）。
 
 说明：

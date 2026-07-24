@@ -1,5 +1,5 @@
 #!/bin/bash
-# 一次构建并校验 macOS Full + Lite 两个可分发 DMG。
+# 构建并校验 macOS 可分发 DMG（仅 Full；Lite 已停止维护）。
 # 用法：
 #   RUNTIME_SRC=<scratch目录> ARCH=arm64 ./make_release_matrix.sh
 # 本地流程测试（不公证）：
@@ -17,39 +17,26 @@ case "$ARCH" in
   *) echo "未知架构 $ARCH"; exit 1 ;;
 esac
 
-run_variant() {
-  local name="$1"
-  local mvp="$2"
-
-  echo
-  echo "============================================================"
-  echo "开始构建 Folderis ${name}（ARCH=${ARCH}）"
-  echo "============================================================"
-  RUNTIME_SRC="$RUNTIME_SRC" \
-    ARCH="$ARCH" \
-    MVP="$mvp" \
-    SKIP_NOTARIZE="$SKIP_NOTARIZE" \
-    ./make_release.sh
-}
-
-run_variant "Full" 0
-run_variant "Lite" 1
+echo "============================================================"
+echo "开始构建 Folderis（ARCH=${ARCH}）"
+echo "============================================================"
+RUNTIME_SRC="$RUNTIME_SRC" \
+  ARCH="$ARCH" \
+  SKIP_NOTARIZE="$SKIP_NOTARIZE" \
+  ./make_release.sh
 
 FULL_DMG="dist/Folderis-$DMG_SUFFIX.dmg"
-LITE_DMG="dist/Folderis-Lite-$DMG_SUFFIX.dmg"
-for artifact in "$FULL_DMG" "$LITE_DMG"; do
-  [ -f "$artifact" ] || { echo "缺少发布产物：$artifact"; exit 1; }
-  hdiutil verify "$artifact" >/dev/null
-done
+[ -f "$FULL_DMG" ] || { echo "缺少发布产物：$FULL_DMG"; exit 1; }
+hdiutil verify "$FULL_DMG" >/dev/null
 
 MANIFEST="dist/Folderis-macOS-$DMG_SUFFIX-SHA256.txt"
 (
   cd dist
-  shasum -a 256 "$(basename "$FULL_DMG")" "$(basename "$LITE_DMG")"
+  shasum -a 256 "$(basename "$FULL_DMG")"
 ) > "$MANIFEST"
 
 echo
-echo "macOS release matrix 完成："
-ls -lh "$FULL_DMG" "$LITE_DMG"
+echo "macOS release 完成："
+ls -lh "$FULL_DMG"
 echo "校验文件：$MANIFEST"
 cat "$MANIFEST"

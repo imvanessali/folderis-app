@@ -137,7 +137,6 @@ public sealed class OnboardingWindow : Window
         panel.HorizontalAlignment = HorizontalAlignment.Stretch;
         panel.Children.Add(Text(L10n.T("选择 AI 来源", "Choose your AI source"), 23, FontWeights.Bold));
 
-#if !MVP_DEEPSEEK
         var claude = CliBackend.DetectPath("claude");
         var codex = CliBackend.DetectPath("codex");
         var cursor = CliBackend.DetectCursorPath();
@@ -158,7 +157,6 @@ public sealed class OnboardingWindow : Window
         panel.Children.Add(BackendRow("BuiltinApi", true,
             L10n.T("使用 API Key（目前只支持 DeepSeek）", "Use API Key (DeepSeek only for now)"),
             L10n.T("在下一步配置 Deepseek API key", "Configure the DeepSeek API key in the next step")));
-#endif
         return panel;
     }
 
@@ -243,13 +241,9 @@ public sealed class OnboardingWindow : Window
 
     private List<Page> CurrentPath()
     {
-#if MVP_DEEPSEEK
-        return [Page.Welcome, Page.DeepSeekKey, Page.Done];
-#else
         return _selectedBackend == "BuiltinApi"
             ? [Page.Welcome, Page.Brain, Page.DeepSeekKey, Page.Done]
             : [Page.Welcome, Page.Brain, Page.Done];
-#endif
     }
 
     private void GoNext()
@@ -271,11 +265,7 @@ public sealed class OnboardingWindow : Window
 
     private void Finish()
     {
-#if MVP_DEEPSEEK
-        _settings.Backend = "BuiltinApi";
-#else
         _settings.Backend = _selectedBackend;
-#endif
         _settings.ApiKey = _keyBox.Password.Trim();
         _settings.OnboardingDone = true;
         _settings.Save();

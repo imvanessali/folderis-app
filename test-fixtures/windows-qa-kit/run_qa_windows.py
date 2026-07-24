@@ -13,14 +13,11 @@ from pathlib import Path
 def parse_args():
     parser = argparse.ArgumentParser(description="Folderis Windows 技能 QA")
     parser.add_argument("work", nargs="?", default=str(Path.home() / "Downloads" / "Test Folderis"))
-    parser.add_argument("--edition", choices=("full", "lite"), required=True,
-                        help="指定要测试的已安装版本，避免 Full/Lite 同时安装时测错包")
     return parser.parse_args()
 
-def find_runtime(edition):
+def find_runtime():
     local = Path(os.environ["LOCALAPPDATA"])
-    app_names = ("Folderis",) if edition == "full" else ("Folderis Lite", "FolderisLite")
-    candidates = [local / "Programs" / app / "runtime" for app in app_names]
+    candidates = [local / "Programs" / "Folderis" / "runtime"]
     candidates.append(local / "Sider")  # 兜底,顺序与 SkillRunner 一致
     for root in candidates:
         py = root / "python" / "python.exe"
@@ -30,8 +27,7 @@ def find_runtime(edition):
     sys.exit("找不到技能运行时。先装 Folderis 并让它完成运行时安装,或确认安装目录。")
 
 ARGS = parse_args()
-PY, SKILLS, ROOT = find_runtime(ARGS.edition)
-print(f"版本: {ARGS.edition}")
+PY, SKILLS, ROOT = find_runtime()
 print(f"运行时: {ROOT}")
 print(f"skills.py sha256: {hashlib.sha256(SKILLS.read_bytes()).hexdigest()}")
 

@@ -38,16 +38,14 @@ Explorer 集成和 DPAPI。发布前仍需在 Windows 真机冒烟测试。
 ```
 
 安装脚本从 Microsoft 下载固定版本并校验 SHA-512，然后解包到
-`~/.dotnet-folderis`；不需要 sudo，也不会覆盖已有的 `~/.dotnet`。构建脚本会依次
-编译 Folderis Full 和 Lite。GitHub Actions 的 `Windows Build` 工作流会在真实
-`windows-latest` runner 上执行同样的双变体编译门禁。
+`~/.dotnet-folderis`；不需要 sudo，也不会覆盖已有的 `~/.dotnet`。GitHub Actions
+的 `Windows Build` 工作流会在真实 `windows-latest` runner 上执行同样的编译门禁。
 
 ## 发布签名（Authenticode）
 
 未签名的安装器和应用会触发 Unknown Publisher / SmartScreen 警告（2026-07-23 QA D3）。
 `build_release.sh` 支持在 macOS 上用 [osslsigncode](https://github.com/mtrojnar/osslsigncode)
-（`brew install osslsigncode`）对内部 `Folderis.exe` / `Folderis Lite.exe` 及两个
-安装器签名：
+（`brew install osslsigncode`）对内部 `Folderis.exe` 及安装器签名：
 
 ```bash
 export FOLDERIS_SIGN_PFX=/path/to/codesign.pfx     # 代码签名证书

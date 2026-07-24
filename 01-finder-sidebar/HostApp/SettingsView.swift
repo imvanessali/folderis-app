@@ -10,7 +10,6 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
-                #if !MVP_DEEPSEEK
                 section(title: L("选择 AI 来源", "Choose AI Source")) {
                     VStack(spacing: 8) {
                         ForEach([BackendKind.claudeCode, .codex, .cursor, .builtinAPI]) { kind in
@@ -29,12 +28,6 @@ struct SettingsView: View {
                     }
                 }
 
-                #else
-                // Lite：section 标题已是 "DeepSeek API Key"，内部不再重复表头。
-                section(title: "DeepSeek API Key") {
-                    apiKeyControls(showTitle: false)
-                }
-                #endif
 
                 section(title: L("命令审批", "Command Approval")) {
                     Picker("", selection: $settings.approvalMode) {
@@ -94,11 +87,7 @@ struct SettingsView: View {
     private static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
     private static let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
     private static let edition: String = {
-        #if MVP_DEEPSEEK
-        return "Folderis Lite"
-        #else
         return "Folderis Full"
-        #endif
     }()
 
     /// The executable's modification date — effectively the build time.

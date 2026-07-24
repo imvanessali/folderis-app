@@ -259,7 +259,6 @@ public partial class MainPanel : Window
         };
 
         var content = new StackPanel { Margin = new Thickness(18), MinWidth = 360 };
-#if !MVP_DEEPSEEK
         var selectedBackend = _settings.Backend;
         var rbClaude = new RadioButton { GroupName = "settings-backend", Margin = new Thickness(0, 3, 0, 3) };
         var rbCodex = new RadioButton { GroupName = "settings-backend", Margin = new Thickness(0, 3, 0, 3) };
@@ -351,10 +350,6 @@ public partial class MainPanel : Window
         content.Children.Add(keySection);
         content.Children.Add(caption);
         RefreshDetection();
-#else
-        keySection.Margin = new Thickness(0);
-        content.Children.Add(keySection);
-#endif
 
         var save = new Button { Content = L10n.T("保存", "Save"), Width = 88, Margin = new Thickness(0, 0, 8, 0) };
         var quit = new Button { Content = L10n.T($"退出 {ProductInfo.Name}", $"Quit {ProductInfo.Name}"), Width = 110,
@@ -401,11 +396,7 @@ public partial class MainPanel : Window
         save.Click += (_, _) =>
         {
             _settings.ApiKey = input.Password.Trim();
-#if !MVP_DEEPSEEK
             _settings.Backend = selectedBackend;
-#else
-            _settings.Backend = "BuiltinApi";
-#endif
             _settings.ApprovalMode = rbYolo.IsChecked == true ? "yolo"
                                    : rbSafe.IsChecked == true ? "safeAuto" : "ask";
             _fileTools.ApprovalMode = _settings.ApprovalMode;
@@ -1211,7 +1202,6 @@ public partial class MainPanel : Window
                     return;
                 }
             }
-#if !MVP_DEEPSEEK
             if (_settings.Backend != "BuiltinApi")
             {
                 var kind = _settings.Backend switch
@@ -1258,7 +1248,6 @@ public partial class MainPanel : Window
                 SaveConversation();
                 return;
             }
-#endif
             await _agent.CompactIfNeededAsync(hist, _cts.Token);
             if (!ReferenceEquals(hist, _history)) return;
             await _agent.RunAsync(
@@ -1356,15 +1345,9 @@ public partial class MainPanel : Window
             "same style", "preserve layout", "keep the layout", "pixel-perfect");
         if (hasPdf && requestsTranslation && requestsVisualFidelity && !acceptedDowngrade)
         {
-#if MVP_DEEPSEEK
-            return L10n.T(
-                "当前使用的是 DeepSeek API。它不能查看 PDF 页面的视觉画面，Folderis Lite 目前无法可靠完成“翻译内容并保持原 PDF 版式一致”，所以我没有开始处理，也不会生成页面图片。\n\n你可以改为：\n1. 只提取并翻译指定页文字；\n2. 生成近似排版的新 PDF，但不保证与原版一致。",
-                "The current DeepSeek API cannot inspect PDF page visuals, so Folderis Lite cannot reliably translate content while preserving the original layout. Nothing was processed. You can request text-only translation or an approximately laid-out PDF instead.");
-#else
             return L10n.T(
                 "当前使用的是 DeepSeek API。它不能查看 PDF 页面的视觉画面，Folderis 目前无法可靠完成“翻译内容并保持原 PDF 版式一致”，所以我没有开始处理，也不会生成页面图片。\n\n你可以改为：\n1. 只提取并翻译指定页文字；\n2. 生成近似排版的新 PDF，但不保证与原版一致；\n3. 切换 Claude Code、Codex 或 Cursor 后再尝试。",
                 "The current DeepSeek API cannot inspect PDF page visuals, so Folderis cannot reliably translate content while preserving the original layout. Nothing was processed. You can request text-only translation, approximate layout, or switch to Claude Code, Codex, or Cursor.");
-#endif
         }
 
         var requestsVisualInspection = ContainsAny(
