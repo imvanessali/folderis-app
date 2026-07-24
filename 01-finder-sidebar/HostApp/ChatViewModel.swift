@@ -492,17 +492,10 @@ final class ChatViewModel: ObservableObject {
             "same style", "preserve layout", "keep the layout", "pixel-perfect"
         ])
         if hasPDF && requestsTranslation && requestsVisualFidelity && !acceptedDowngrade {
-#if MVP_DEEPSEEK
-            return L(
-                "当前使用的是 DeepSeek API。它不能查看 PDF 页面的视觉画面，Folderis Lite 目前无法可靠完成“翻译内容并保持原 PDF 版式一致”，所以我没有开始处理，也不会生成页面图片。\n\n你可以改为：\n1. 只提取并翻译指定页文字；\n2. 生成近似排版的新 PDF，但不保证与原版一致。",
-                "The current DeepSeek API cannot inspect the visual appearance of PDF pages, so Folderis Lite cannot reliably translate content while preserving the original layout. Nothing was processed. You can request text-only translation or an approximately laid-out PDF instead."
-            )
-#else
             return L(
                 "当前使用的是 DeepSeek API。它不能查看 PDF 页面的视觉画面，Folderis 目前无法可靠完成“翻译内容并保持原 PDF 版式一致”，所以我没有开始处理，也不会生成页面图片。\n\n你可以改为：\n1. 只提取并翻译指定页文字；\n2. 生成近似排版的新 PDF，但不保证与原版一致；\n3. 在完整版中切换 Claude Code、Codex 或 Cursor 后再尝试。",
                 "The current DeepSeek API cannot inspect the visual appearance of PDF pages, so Folderis cannot reliably translate content while preserving the original layout. Nothing has been processed and no page images were created.\n\nYou can instead request: 1. text-only translation of specified pages; 2. a new PDF with approximate layout; or 3. switch to Claude Code, Codex, or Cursor in the full version."
             )
-#endif
         }
 
         let requestsVisualInspection = containsAny([

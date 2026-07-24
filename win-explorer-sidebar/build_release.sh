@@ -45,17 +45,13 @@ RUNTIME="runtime-cache/$RID/runtime"
 SETUP_PROJECT="src/Setup/Setup.csproj"
 SETUP_PAYLOAD="src/Setup/payload.zip"
 
-rm -rf "$DIST/full-$RID" "$DIST/lite-$RID"
+rm -rf "$DIST/full-$RID"
 mkdir -p "$DIST"
 rm -f \
   "$DIST/Folderis-Setup.exe" \
-  "$DIST/Folderis-Lite-Setup.exe" \
   "$DIST/Folderis-Setup-dotnet.exe" \
-  "$DIST/Folderis-Lite-Setup-dotnet.exe" \
   "$DIST/Folderis-Windows-x64.zip" \
-  "$DIST/Folderis-Lite-Windows-x64.zip" \
   "$DIST/Folderis-Windows-x64-fresh.zip" \
-  "$DIST/Folderis-Lite-Windows-x64-fresh.zip" \
   "$DIST/归档.zip"
 trap 'rm -f "$SETUP_PAYLOAD"' EXIT
 
@@ -108,22 +104,18 @@ build_dotnet_setup() {
 ./prepare_windows_runtime.sh
 
 publish_app "$DIST/full-$RID"
-publish_app "$DIST/lite-$RID" -p:Lite=true
 sign_file "$DIST/full-$RID/Folderis.exe"
-sign_file "$DIST/lite-$RID/Folderis Lite.exe"
 
 if [ "$INSTALLER_MODE" != "dotnet" ] && [ -x "$MAKENSIS" ]; then
-  if build_setup "$DIST/full-$RID" "Folderis-Setup" "Folderis" "Folderis.exe" "Folderis" && \
-     build_setup "$DIST/lite-$RID" "Folderis-Lite-Setup" "Folderis Lite" "Folderis Lite.exe" "FolderisLite"; then
+  if build_setup "$DIST/full-$RID" "Folderis-Setup" "Folderis" "Folderis.exe" "Folderis"; then
     sign_file "$DIST/Folderis-Setup.exe"
-    sign_file "$DIST/Folderis-Lite-Setup.exe"
-    echo "Built NSIS installers."
+    echo "Built NSIS installer."
   elif [ "$INSTALLER_MODE" = "nsis" ]; then
     echo "NSIS installer build failed." >&2
     exit 1
   else
-    echo "NSIS installer build failed; building the .NET fallback installers." >&2
-    rm -f "$DIST/Folderis-Setup.exe" "$DIST/Folderis-Lite-Setup.exe"
+    echo "NSIS installer build failed; building the .NET fallback installer." >&2
+    rm -f "$DIST/Folderis-Setup.exe"
     INSTALLER_MODE="dotnet"
   fi
 elif [ "$INSTALLER_MODE" = "nsis" ]; then
@@ -135,9 +127,7 @@ fi
 
 if [ "$INSTALLER_MODE" = "dotnet" ]; then
   build_dotnet_setup "$DIST/full-$RID" "Folderis-Setup" "Folderis-Setup" ".setup-build/full"
-  build_dotnet_setup "$DIST/lite-$RID" "Folderis-Lite-Setup" "Folderis-Lite-Setup" ".setup-build/lite"
   sign_file "$DIST/Folderis-Setup.exe"
-  sign_file "$DIST/Folderis-Lite-Setup.exe"
 fi
 
 if [ -z "$SIGN_PFX" ]; then

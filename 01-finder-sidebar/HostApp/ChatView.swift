@@ -241,7 +241,6 @@ private struct HistoryListView: View {
                         }
 
                         // 终端里用 Claude Code 开的会话：点开导入并可续聊
-                        #if !MVP_DEEPSEEK
                         if !chat.ccSessionList.isEmpty {
                             HStack {
                                 Text(L("CLAUDE CODE 终端会话", "CLAUDE CODE TERMINAL SESSIONS"))
@@ -279,7 +278,6 @@ private struct HistoryListView: View {
                                 Divider().padding(.leading, 12)
                             }
                         }
-                        #endif
                     }
                 }
             }

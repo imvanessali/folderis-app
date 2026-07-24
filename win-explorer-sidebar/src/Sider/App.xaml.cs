@@ -7,15 +7,9 @@ internal static class ProductInfo
 {
     public const string Version = "1.1.720.1";
     public const string Build = "20260720.1";
-#if MVP_DEEPSEEK
-    public const string Name = "Folderis Lite";
-    public const string Edition = "Lite";
-    public const string MutexName = "Folderis.Sider.Lite.Single";
-#else
     public const string Name = "Folderis";
     public const string Edition = "Full";
     public const string MutexName = "Folderis.Sider.Full.Single";
-#endif
 }
 
 public partial class App : Application

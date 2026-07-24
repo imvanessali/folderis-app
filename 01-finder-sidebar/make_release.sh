@@ -7,9 +7,7 @@
 #   2. xcrun notarytool store-credentials notary --apple-id 你的AppleID \
 #        --team-id 2Y5H5X7UQS --password <App专用密码>
 # 用法：
-#   RUNTIME_SRC=<scratch目录> MVP=0 ./make_release.sh  # Full
-#   RUNTIME_SRC=<scratch目录> MVP=1 ./make_release.sh  # Lite
-# 同时发布 Full + Lite 请使用 make_release_matrix.sh。
+#   RUNTIME_SRC=<scratch目录> ./make_release.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -19,7 +17,6 @@ IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Applica
 echo "签名身份：$IDENTITY"
 RUNTIME_SRC="${RUNTIME_SRC:?需要 RUNTIME_SRC=<含 pyrt/ helpers/ ffmpeg 的目录>}"
 ARCH="${ARCH:-arm64}"   # arm64 | x86_64
-MVP="${MVP:-0}"         # 1 = Folderis Lite（仅 DeepSeek Key）
 APP_VERSION="1.1.0"
 BUILD_VERSION="20260724.2"
 NOTARY_SCRATCH=""
@@ -105,9 +102,6 @@ esac
 
 EXTRA_BUILD=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=")
 BUILD_PRODUCT="Folderis.app"
-if [ "$MVP" = "1" ]; then
-  EXTRA_BUILD=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=MVP_DEEPSEEK")
-fi
 
 echo "== 1/8 构建 =="
 xcodebuild -project FinderSidebar.xcodeproj -scheme FinderSidebarHost -configuration Release \
@@ -115,29 +109,13 @@ xcodebuild -project FinderSidebar.xcodeproj -scheme FinderSidebarHost -configura
   ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
   DEVELOPMENT_TEAM=$TEAM CODE_SIGN_STYLE=Automatic "${EXTRA_BUILD[@]}" build 2>&1 | grep -E "error|BUILD"
 
-if [ "$MVP" = "1" ]; then
-  APP="dist/Folderis Lite.app"
-  DMG_NAME="Folderis-Lite-$DMG_SUFFIX"
-  VOLNAME="Folderis Lite"
-else
-  APP=dist/Folderis.app
-  DMG_NAME="Folderis-$DMG_SUFFIX"
-  VOLNAME="Folderis"
-fi
+APP=dist/Folderis.app
+DMG_NAME="Folderis-$DMG_SUFFIX"
+VOLNAME="Folderis"
 mkdir -p dist && rm -rf "$APP" dist/dmgroot "dist/$DMG_NAME.dmg"
 cp -R ".xcbuild/Build/Products/Release/$BUILD_PRODUCT" "$APP"
 plutil -replace CFBundleShortVersionString -string "$APP_VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$BUILD_VERSION" "$APP/Contents/Info.plist"
-if [ "$MVP" = "1" ]; then
-  # Lite 独立身份：可与完整版共存，各自独立的 TCC 授权与偏好设置
-  plutil -replace CFBundleIdentifier -string com.local.findersidebar.lite "$APP/Contents/Info.plist"
-  plutil -replace CFBundleName -string "Folderis Lite" "$APP/Contents/Info.plist"
-  plutil -replace CFBundleDisplayName -string "Folderis Lite" "$APP/Contents/Info.plist"
-  mv "$APP/Contents/MacOS/Folderis" "$APP/Contents/MacOS/Folderis Lite"
-  plutil -replace CFBundleExecutable -string "Folderis Lite" "$APP/Contents/Info.plist"
-  # Lite 不带 Finder 工具栏扩展
-  rm -rf "$APP/Contents/PlugIns"
-fi
 
 echo "== 2/8 内嵌运行时 =="
 RT="$APP/Contents/Resources/runtime"

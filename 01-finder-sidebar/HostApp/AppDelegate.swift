@@ -239,14 +239,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// SwiftPM and Xcode builds can coexist during development. A shared
-    /// per-edition lock ensures they still produce only one panel, while the
-    /// full and Lite editions remain able to coexist.
+    /// lock ensures they still produce only one panel.
     private func acquireSingleInstanceLock() -> Bool {
-        #if MVP_DEEPSEEK
-        let edition = "lite"
-        #else
         let edition = "full"
-        #endif
         let path = NSTemporaryDirectory() + "com.local.findersidebar.\(edition).\(getuid()).lock"
         let fd = Darwin.open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { return true }

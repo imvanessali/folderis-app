@@ -48,7 +48,6 @@ project="src/Sider/Sider.csproj"
 
 echo "Using $("$dotnet_command" --version) from $dotnet_command"
 "$dotnet_command" restore "$project"
-"$dotnet_command" build "$project" -c Release --no-restore -p:Lite=false
-"$dotnet_command" build "$project" -c Release --no-restore -p:Lite=true
+"$dotnet_command" build "$project" -c Release --no-restore
 
-echo "Windows cross-build passed for Folderis Full and Lite."
+echo "Windows cross-build passed for Folderis."

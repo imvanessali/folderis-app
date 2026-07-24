@@ -390,11 +390,7 @@ struct OnboardingView: View {
 
     /// DeepSeek 步骤只在选了内置 API 时出现在进度点里。
     private var visibleSteps: [Step] {
-        #if MVP_DEEPSEEK
-        Step.allCases.filter { $0 != .brain }
-        #else
         Step.allCases.filter { $0 != .deepSeekKey || brainChoice == .builtinAPI }
-        #endif
     }
 
     private var nextTitle: String {
@@ -416,13 +412,7 @@ struct OnboardingView: View {
     private func goNext() {
         switch step {
         case .welcome:
-            #if MVP_DEEPSEEK
-            brainChoice = .builtinAPI
-            applyBrainChoice()
-            step = .deepSeekKey
-            #else
             step = .brain
-            #endif
         case .brain:
             applyBrainChoice()
             step = brainChoice == .builtinAPI ? .deepSeekKey : .permissions
@@ -440,13 +430,8 @@ struct OnboardingView: View {
     private func goBack() {
         switch step {
         case .brain: step = .welcome
-        #if MVP_DEEPSEEK
-        case .deepSeekKey: step = .welcome
-        case .permissions: step = .deepSeekKey
-        #else
         case .deepSeekKey: step = .brain
         case .permissions: step = brainChoice == .builtinAPI ? .deepSeekKey : .brain
-        #endif
         default: break
         }
     }
