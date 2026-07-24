@@ -82,6 +82,44 @@ class AvMergeTests(unittest.TestCase):
         self.assertAlmostEqual(self.duration(self.folder / "merged.mp4"), expected,
                                delta=max(0.5, expected * 0.02))
 
+    def make_51_clip(self, name, duration=2):
+        """带 5.1 六声道音轨的视频：原生 aac 编码器不支持该布局，必须降混。"""
+        path = self.folder / name
+        subprocess.run(
+            [str(FFMPEG), "-y",
+             "-f", "lavfi", "-i", f"testsrc=duration={duration}:size=320x240:rate=24",
+             "-f", "lavfi", "-i", f"anullsrc=channel_layout=5.1:sample_rate=48000",
+             "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-c:a", "pcm_s16le", str(path)],
+            check=True, capture_output=True)
+        return path
+
+    def audio_channels(self, path):
+        result = subprocess.run(
+            [str(FFPROBE), "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=channels", "-of", "default=nk=1:nw=1", str(path)],
+            check=True, capture_output=True, text=True)
+        return int(result.stdout.strip())
+
+    def test_compress_downmixes_surround_audio(self):
+        clip = self.make_51_clip("surround.mov")
+        self.assertEqual(self.audio_channels(clip), 6)
+
+        self.run_skill("av-compress", clip.name, "--crf", "28")
+
+        out = self.folder / "surround_small.mp4"
+        self.assertTrue(out.exists())
+        self.assertGreater(out.stat().st_size, 0)
+        self.assertEqual(self.audio_channels(out), 2)
+        self.assertGreater(self.duration(out), 1.5)
+
+    def test_convert_downmixes_surround_audio(self):
+        clip = self.make_51_clip("surround.mov")
+        self.run_skill("av-convert", clip.name, "--to", "mp4")
+        out = self.folder / "surround.mp4"
+        self.assertTrue(out.exists())
+        self.assertEqual(self.audio_channels(out), 2)
+
     def dispatch(self, request, *files):
         result = self.run_skill("local-dispatch", "--request", request,
                                 "--files", *files)

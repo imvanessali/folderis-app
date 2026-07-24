@@ -1201,7 +1201,7 @@ def cmd_av_trim(a):
         if a.end:
             cmd += ["-to", a.end]
         cmd += ["-i", str(f)]
-        cmd += (["-c", "copy"] if a.fast else [])
+        cmd += (["-c", "copy"] if a.fast else _stereo_downmix_args(f))
         cmd += [str(out)]
         run(cmd)
         print(f"{f.name} → {out.name}")
@@ -1213,9 +1213,17 @@ def cmd_av_convert(a):
     files = expand(a.files)
     for f in files:
         out = available_output(f.with_suffix("." + a.to))
-        run([ff, "-y", "-i", str(f), str(out)])
+        run([ff, "-y", "-i", str(f), *_stereo_downmix_args(f), str(out)])
         print(f"{f.name} → {out.name}")
     ok(f"已转换 {len(files)} 个视频为 {a.to}")
+
+
+def _stereo_downmix_args(path):
+    """ffmpeg 原生 aac 编码器不支持 5.1 等多声道布局；>2 声道时降混立体声。"""
+    probe = _probe_media(path)
+    if probe and probe[2] and max((s.get("channels") or 0) for s in probe[2]) > 2:
+        return ["-ac", "2"]
+    return []
 
 
 def cmd_av_compress(a):
@@ -1223,7 +1231,7 @@ def cmd_av_compress(a):
     files = expand(a.files)
     for f in files:
         out = available_output(f.with_name(f.stem + "_small.mp4"))
-        cmd = [ff, "-y", "-i", str(f), "-c:v", "libx264", "-crf", str(a.crf), "-preset", "medium", "-c:a", "aac", "-b:a", "128k"]
+        cmd = [ff, "-y", "-i", str(f), "-c:v", "libx264", "-crf", str(a.crf), "-preset", "medium", "-c:a", "aac", "-b:a", "128k", *_stereo_downmix_args(f)]
         if a.width:
             cmd += ["-vf", f"scale={a.width}:-2"]
         run(cmd + [str(out)])
@@ -1389,7 +1397,7 @@ def cmd_audio_convert(a):
     files = expand(a.files)
     for f in files:
         out = available_output(f.with_suffix("." + a.to))
-        run([ff, "-y", "-i", str(f), str(out)])
+        run([ff, "-y", "-i", str(f), *_stereo_downmix_args(f), str(out)])
         print(f"{f.name} → {out.name}")
     ok(f"已转换 {len(files)} 个音频为 {a.to}")
 
