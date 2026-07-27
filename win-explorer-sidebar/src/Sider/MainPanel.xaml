@@ -73,6 +73,9 @@
                 <TextBox x:Name="InputBox" MinHeight="40" MaxHeight="120"
                          TextWrapping="Wrap" AcceptsReturn="False"
                          VerticalContentAlignment="Center" Padding="10,8"/>
+                <TextBlock x:Name="InputHint" IsHitTestVisible="False"
+                           Foreground="Gray" Margin="13,0,0,0"
+                           VerticalAlignment="Center"/>
                 <Button Grid.Column="1" x:Name="SendButton" Content="&#xE74A;"
                         Width="34" Height="34" Margin="6,0,0,0"
                         FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14"

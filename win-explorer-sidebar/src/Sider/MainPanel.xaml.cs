@@ -31,6 +31,9 @@ public partial class MainPanel : Window
         HistoryButton.ToolTip = L10n.T("历史对话", "History");
         SettingsButton.ToolTip = L10n.T("设置", "Settings");
         SendButton.ToolTip = L10n.T("发送", "Send");
+        InputHint.Text = L10n.T("描述操作…", "Describe a task…");
+        InputBox.TextChanged += (_, _) => InputHint.Visibility =
+            InputBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         _fileTools = new FileTools
         {
             ApprovalHandler = (cmd, purpose) => Dispatcher.Invoke(() => ShowApprovalCard(cmd, purpose))
@@ -266,7 +269,7 @@ public partial class MainPanel : Window
         var rbDeepSeek = new RadioButton
         {
             GroupName = "settings-backend",
-            Content = L10n.T("使用 API Key（目前只支持 DeepSeek）", "Use API Key (DeepSeek only for now)"),
+            Content = L10n.T("使用 API Key（仅Deepseek）", "Use API Key (DeepSeek only)"),
             Margin = new Thickness(0, 3, 0, 3)
         };
         var retryClaude = new Button { Content = L10n.T("重新检测", "Detect again"), Padding = new Thickness(8, 2, 8, 2) };

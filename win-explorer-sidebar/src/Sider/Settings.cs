@@ -18,7 +18,7 @@ public sealed class Settings
     public string ApiKey { get; set; } = "";
     public string Backend { get; set; } = "BuiltinApi"; // BuiltinApi | ClaudeCode | Codex | Cursor
     public bool OnboardingDone { get; set; }
-    public string ApprovalMode { get; set; } = "ask"; // ask | safeAuto | yolo
+    public string ApprovalMode { get; set; } = "safeAuto"; // ask | safeAuto | yolo
 
     private static string Dir => SkillRunner.SupportRoot;
     private static string ConfigPath => Path.Combine(Dir, "settings.json");
