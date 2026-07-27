@@ -18,16 +18,21 @@ echo "签名身份：$IDENTITY"
 RUNTIME_SRC="${RUNTIME_SRC:?需要 RUNTIME_SRC=<含 pyrt/ helpers/ ffmpeg 的目录>}"
 ARCH="${ARCH:-arm64}"   # arm64 | x86_64
 APP_VERSION="1.1.0"
-BUILD_VERSION="20260724.2"
+BUILD_VERSION="20260724.3"
 NOTARY_SCRATCH=""
 HELPER_BUILD=""
 BG_BUILD=""
 RW=""
 VOLNAME=""
+STAGE_MOUNT=""
 
 cleanup_release_scratch() {
   if [ -n "$VOLNAME" ]; then
     hdiutil detach "/Volumes/$VOLNAME" -quiet 2>/dev/null || true
+  fi
+  if [ -n "$STAGE_MOUNT" ]; then
+    hdiutil detach "$STAGE_MOUNT" -quiet 2>/dev/null || true
+    rmdir "$STAGE_MOUNT" 2>/dev/null || true
   fi
   if [ -n "$NOTARY_SCRATCH" ]; then
     rm -rf "$NOTARY_SCRATCH"
@@ -230,11 +235,22 @@ tiffutil -cathidpicheck "$BG_BUILD/bg-1x.png" "$BG_BUILD/bg-2x.png" \
   -out dist/dmgroot/.background/bg.tiff >/dev/null
 rm -rf "$BG_BUILD"
 BG_BUILD=""
-# 先出可写镜像 → Finder 现场排版（背景别名必须指向最终卷）→ 转只读压缩
+# 先出空白可写镜像，挂到自定义挂载点填充内容：无完整磁盘访问权限的环境
+# （如 Orca 会话）里本进程读写 /Volumes/<卷> 内文件会被 TCC 拒绝，
+# `hdiutil create -srcfolder` 因此失败；自定义挂载点不受此限制。
 RW=dist/rw-tmp.dmg
 rm -f "$RW"
 hdiutil detach "/Volumes/$VOLNAME" -quiet 2>/dev/null || true
-hdiutil create -volname "$VOLNAME" -srcfolder dist/dmgroot -ov -format UDRW "$RW" >/dev/null
+DMGROOT_MB=$(du -sm dist/dmgroot | cut -f1)
+hdiutil create -size "$((DMGROOT_MB + 80))m" -fs "HFS+" -volname "$VOLNAME" -ov "$RW" >/dev/null
+STAGE_MOUNT=$(mktemp -d)
+hdiutil attach "$RW" -mountpoint "$STAGE_MOUNT" -nobrowse -noautoopen >/dev/null
+ditto --rsrc --extattr dist/dmgroot "$STAGE_MOUNT"
+SetFile -a C "$STAGE_MOUNT"
+sync
+hdiutil detach "$STAGE_MOUNT" >/dev/null
+# Finder 现场排版（背景别名必须指向最终卷）：重挂到默认 /Volumes 让 Finder
+# 看到卷并自己写 .DS_Store，全程不需要本进程访问 /Volumes 内文件。
 hdiutil attach "$RW" -noautoopen >/dev/null
 sleep 1
 APPBASE=$(basename "$APP")
@@ -262,6 +278,16 @@ LAYOUT
 sync
 hdiutil detach "/Volumes/$VOLNAME" -quiet
 VOLNAME=""
+# Finder 排版会删掉 .VolumeIcon.icns 并清掉卷根的自定义图标位（实测），
+# 转只读前补回，并确认排版确实写入了 .DS_Store。
+hdiutil attach "$RW" -mountpoint "$STAGE_MOUNT" -nobrowse -noautoopen >/dev/null
+[ -f "$STAGE_MOUNT/.DS_Store" ] || { echo "错误：Finder 排版未写入 .DS_Store"; exit 1; }
+cp branding/AppIcon.icns "$STAGE_MOUNT/.VolumeIcon.icns"
+SetFile -a C "$STAGE_MOUNT"
+sync
+hdiutil detach "$STAGE_MOUNT" >/dev/null
+rmdir "$STAGE_MOUNT" 2>/dev/null || true
+STAGE_MOUNT=""
 hdiutil convert "$RW" -format UDZO -o "$DMG" -ov >/dev/null
 rm -f "$RW"
 RW=""
