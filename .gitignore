@@ -41,6 +41,7 @@ win-explorer-sidebar/src/Setup/payload.zip
 
 # Distribution artifacts are rebuilt from source
 **/dist/
+/Release/
 *.dmg
 *.exe
 
