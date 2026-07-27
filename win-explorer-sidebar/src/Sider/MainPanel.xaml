@@ -35,7 +35,23 @@
         </Style>
     </Window.Resources>
     <Border Background="#FAFAFA" CornerRadius="8" BorderBrush="#22000000" BorderThickness="1">
-        <DockPanel Margin="10">
+      <Grid>
+        <!-- 收起态：窄轨（icon + ">"），点击任意处展开；与展开态共用同一窗口 -->
+        <Grid x:Name="CollapsedRail" Visibility="Collapsed" Background="Transparent"
+              Cursor="Hand" MouseLeftButtonUp="OnExpandClick">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
+                <Image Source="pack://application:,,,/Assets/app.png" Width="28" Height="28"
+                       Stretch="UniformToFill">
+                    <Image.Clip>
+                        <EllipseGeometry Center="14,14" RadiusX="14" RadiusY="14"/>
+                    </Image.Clip>
+                </Image>
+                <TextBlock x:Name="ExpandChevron" Text="&#xE76C;"
+                           FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
+                           Foreground="#666" HorizontalAlignment="Center" Margin="0,12,0,0"/>
+            </StackPanel>
+        </Grid>
+        <DockPanel x:Name="ExpandedRoot" Margin="10">
             <DockPanel DockPanel.Dock="Top" Height="40">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <local:SelectableText x:Name="BrandTitle" Text="Folderis" FontSize="18" FontWeight="SemiBold"
@@ -111,5 +127,6 @@
                                 IsHitTestVisible="True"/>
             </Grid>
         </DockPanel>
+      </Grid>
     </Border>
 </Window>

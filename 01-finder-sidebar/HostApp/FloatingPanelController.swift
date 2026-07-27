@@ -12,35 +12,43 @@ private final class SidebarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-/// The collapsed state: a small floating circle the user clicks to re-open
-/// the panel. Shows the current provider's mark. Docks near the top-right of
-/// the Finder window.
-private struct OrbView: View {
-    @ObservedObject var settings: AppSettings
+/// The collapsed state: the panel shrinks to a narrow full-height rail flush
+/// against the Finder window's right edge — just the brand icon and a ">"
+/// chevron; clicking anywhere on it re-opens the full panel.
+private struct CollapsedRailView: View {
     let onTap: () -> Void
 
-    /// Visible circle diameter.
-    static let size: CGFloat = 44
-    /// Transparent margin so the diffuse shadow isn't clipped by the window
-    /// bounds (the clipped shadow read as a "square" artifact).
-    static let padding: CGFloat = 16
-    static var total: CGFloat { size + padding * 2 }
+    /// Rail width when the panel is collapsed.
+    static let width: CGFloat = 56
+    /// Visible icon diameter.
+    private static let iconSize: CGFloat = 32
 
     var body: some View {
         Button(action: onTap) {
-            orbFace
-                .overlay(
-                    Circle().strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
-                )
-                .shadow(color: .black.opacity(0.12), radius: 9, y: 2.5)
+            VStack(spacing: 12) {
+                iconFace
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(width: Self.total, height: Self.total)
+        // 与展开态面板同一套底色/圆角/描边：读起来是“同一块面板变窄”。
+        .background(Color(nsColor: .windowBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.5)
+        )
         .help(L("展开 Folderis", "Expand Folderis"))
     }
 
-    /// 悬浮球用品牌 logo（发布包内 OrbLogo.png）；开发构建无资源时退回符号样式。
-    private var orbFace: some View {
+    /// 品牌 logo（发布包内 OrbLogo.png）；开发构建无资源时退回符号样式。
+    private var iconFace: some View {
         ZStack {
             Circle().fill(Color(nsColor: .controlBackgroundColor))
             if let url = Bundle.main.url(forResource: "OrbLogo", withExtension: "png"),
@@ -53,13 +61,13 @@ private struct OrbView: View {
                 fallbackIcon
             }
         }
-        .frame(width: Self.size, height: Self.size)
+        .frame(width: Self.iconSize, height: Self.iconSize)
         .clipShape(Circle())
     }
 
     private var fallbackIcon: some View {
         Image(systemName: "sparkles")
-            .font(.system(size: 18))
+            .font(.system(size: 14))
             .foregroundStyle(Color.accentColor)
     }
 }
@@ -67,7 +75,7 @@ private struct OrbView: View {
 @MainActor
 final class FloatingPanelController: NSObject {
     private let panel: NSPanel
-    private let orbPanel: NSPanel
+    private let railPanel: NSPanel
     private let tracker: FinderWindowTracker
     private let chat: ChatViewModel
     private let finderContext: FinderContext
@@ -104,26 +112,27 @@ final class FloatingPanelController: NSObject {
         panel.backgroundColor = .clear
         panel.hasShadow = true
 
-        // The collapsed orb: a small transparent borderless panel (window is
-        // larger than the circle so the shadow isn't clipped square).
-        orbPanel = SidebarPanel(
-            contentRect: NSRect(x: 0, y: 0, width: OrbView.total, height: OrbView.total),
+        // The collapsed rail: a narrow full-height borderless panel that sits
+        // exactly where the full panel does, so collapsing reads as the panel
+        // itself getting narrower.
+        railPanel = SidebarPanel(
+            contentRect: NSRect(x: 0, y: 0, width: CollapsedRailView.width, height: 600),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
         )
-        orbPanel.isFloatingPanel = true
-        orbPanel.level = .normal
-        orbPanel.hidesOnDeactivate = false
-        orbPanel.isOpaque = false
-        orbPanel.backgroundColor = .clear
-        orbPanel.hasShadow = false
-        orbPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        railPanel.isFloatingPanel = true
+        railPanel.level = .normal
+        railPanel.hidesOnDeactivate = false
+        railPanel.isOpaque = false
+        railPanel.backgroundColor = .clear
+        railPanel.hasShadow = true
+        railPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         super.init()
 
-        orbPanel.contentView = NSHostingView(
-            rootView: OrbView(settings: settings, onTap: { [weak self] in self?.expand() })
+        railPanel.contentView = NSHostingView(
+            rootView: CollapsedRailView(onTap: { [weak self] in self?.expand() })
         )
 
         let content = SidebarPanelView(
@@ -151,7 +160,7 @@ final class FloatingPanelController: NSObject {
 
     private func expand() {
         isCollapsed = false
-        orbPanel.orderOut(nil)
+        railPanel.orderOut(nil)
         reposition(relativeTo: tracker.frontmostFinderWindowFrame)
     }
 
@@ -180,7 +189,7 @@ final class FloatingPanelController: NSObject {
         // Only accompany Finder: any other app frontmost → everything hides.
         guard userWantsPanel, tracker.isFinderFrontmost else {
             panel.orderOut(nil)
-            orbPanel.orderOut(nil)
+            railPanel.orderOut(nil)
             return
         }
 
@@ -189,32 +198,16 @@ final class FloatingPanelController: NSObject {
            let ro = try? folder.resourceValues(forKeys: [.volumeIsReadOnlyKey]).volumeIsReadOnly,
            ro {
             panel.orderOut(nil)
-            orbPanel.orderOut(nil)
+            railPanel.orderOut(nil)
             return
         }
 
-        // Collapsed: show only the orb, docked to Finder's top-right corner.
-        if isCollapsed {
-            panel.orderOut(nil)
-            guard let finderFrame else {
-                orbPanel.orderOut(nil)
-                return
-            }
-            let inset: CGFloat = 12
-            // 从顶部多让出一段：避开 Finder 工具栏和搜索框区域。
-            let topClearance: CGFloat = 76
-            // 窗口比可见圆大一圈（阴影留白），坐标补偿 padding 保持圆的视觉位置。
-            let orbFrame = NSRect(
-                x: finderFrame.maxX - OrbView.size - inset - OrbView.padding,
-                y: finderFrame.maxY - OrbView.size - topClearance - OrbView.padding,
-                width: OrbView.total,
-                height: OrbView.total
-            )
-            orbPanel.setFrame(orbFrame, display: true)
-            orderDirectlyAboveFinder(orbPanel)
-            return
-        }
-        orbPanel.orderOut(nil)
+        // Collapsed → the narrow rail takes the panel's place, same docking
+        // rules; expanded → the full panel. Only one of the two is on screen.
+        let active = isCollapsed ? railPanel : panel
+        let inactive = isCollapsed ? panel : railPanel
+        let width = isCollapsed ? CollapsedRailView.width : Self.panelWidth
+        inactive.orderOut(nil)
 
         // Finder is active but we can't get its window frame. If that's
         // because Accessibility isn't granted yet, park at the screen's right
@@ -224,19 +217,19 @@ final class FloatingPanelController: NSObject {
             // 只有“确实有 Finder 窗口在屏，但因未授权拿不到位置”时才停靠：
             // 点桌面这类没有窗口的激活不该把面板弹出来。
             guard !tracker.accessibilityGranted, tracker.finderHasOnScreenWindow() else {
-                panel.orderOut(nil)
+                active.orderOut(nil)
                 return
             }
             if let visible = NSScreen.main?.visibleFrame {
                 let parked = NSRect(
-                    x: visible.maxX - Self.panelWidth,
+                    x: visible.maxX - width,
                     y: visible.minY,
-                    width: Self.panelWidth,
+                    width: width,
                     height: visible.height
                 )
-                panel.setFrame(parked, display: true)
+                active.setFrame(parked, display: true)
             }
-            orderDirectlyAboveFinder(panel)
+            orderDirectlyAboveFinder(active)
             return
         }
 
@@ -251,14 +244,14 @@ final class FloatingPanelController: NSObject {
         let gap: CGFloat = 0
 
         var finder = finderFrame
-        let overflow = (finder.maxX + gap + Self.panelWidth) - visible.maxX
+        let overflow = (finder.maxX + gap + width) - visible.maxX
         if overflow > 2 {
             let newWidth = max(Self.minFinderWidth, finder.width - overflow)
             var newX = finder.minX
-            if finder.minX + newWidth + gap + Self.panelWidth > visible.maxX {
+            if finder.minX + newWidth + gap + width > visible.maxX {
                 // Shrinking alone isn't enough (window too far right / too
                 // narrow already): also slide the window left.
-                newX = max(visible.minX, visible.maxX - Self.panelWidth - gap - newWidth)
+                newX = max(visible.minX, visible.maxX - width - gap - newWidth)
             }
             if abs(newWidth - finder.width) > 2 || abs(newX - finder.minX) > 2 {
                 finder = CGRect(x: newX, y: finder.minY, width: newWidth, height: finder.height)
@@ -271,11 +264,11 @@ final class FloatingPanelController: NSObject {
         let panelFrame = NSRect(
             x: finder.maxX + gap,
             y: finder.minY,
-            width: Self.panelWidth,
+            width: width,
             height: finder.height
         )
-        panel.setFrame(panelFrame, display: true)
-        orderDirectlyAboveFinder(panel)
+        active.setFrame(panelFrame, display: true)
+        orderDirectlyAboveFinder(active)
     }
 
     /// Keep our normal-level window paired with the Finder window it is

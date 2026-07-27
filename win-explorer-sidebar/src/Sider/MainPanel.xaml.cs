@@ -26,7 +26,8 @@ public partial class MainPanel : Window
         InitializeComponent();
         Title = ProductInfo.Name;
         BrandTitle.Text = ProductInfo.Name;
-        MinimizeButton.ToolTip = L10n.T("收起为悬浮球", "Collapse to floating orb");
+        MinimizeButton.ToolTip = L10n.T("收起面板", "Collapse panel");
+        CollapsedRail.ToolTip = L10n.T("展开 Folderis", "Expand Folderis");
         NewChatButton.ToolTip = L10n.T("新建对话", "New chat");
         HistoryButton.ToolTip = L10n.T("历史对话", "History");
         SettingsButton.ToolTip = L10n.T("设置", "Settings");
@@ -39,6 +40,7 @@ public partial class MainPanel : Window
         _agent = new AgentClient(_settings, _skills, _fileTools);
         _docker = new PanelDocker(this, _tracker);
         _docker.ContextChanged += ctx => Dispatcher.Invoke(() => OnContextChanged(ctx));
+        _docker.CollapsedChanged += collapsed => Dispatcher.Invoke(() => ApplyCollapsedUI(collapsed));
         // 不能等 Loaded（窗口不主动 Show 时永不触发）：EnsureHandle 可在
         // 未显示状态下创建句柄，立即启动跟踪。
         Dispatcher.BeginInvoke(() => _docker.Start());
@@ -657,9 +659,18 @@ public partial class MainPanel : Window
 
     private void OnMinimizeClick(object sender, RoutedEventArgs e) => _docker.Collapse();
 
+    private void OnExpandClick(object sender, MouseButtonEventArgs e) => _docker.Expand();
+
+    /// <summary>收起态 ↔ 展开态的内部 UI 切换：窄轨只留 icon + ">"。</summary>
+    private void ApplyCollapsedUI(bool collapsed)
+    {
+        ExpandedRoot.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        CollapsedRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     public void ToggleCollapsed()
     {
-        if (IsVisible) _docker.Collapse(); else _docker.Expand();
+        if (_docker.IsCollapsed) _docker.Expand(); else _docker.Collapse();
     }
 
     public void ClearConversation() => OnNewChatClick(this, new RoutedEventArgs());
