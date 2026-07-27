@@ -141,7 +141,7 @@ struct ChatView: View {
             // 苹果“信息”App 风格的聊天输入条：圆角胶囊 + 内嵌圆形发送按钮。
             // 回车发送，Option+回车换行。
             HStack(alignment: .center, spacing: 6) {
-                TextField(L("输入消息…", "Message…"), text: $chat.draft, axis: .vertical)
+                TextField(L("描述操作…", "Describe a task…"), text: $chat.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .lineLimit(2...8)

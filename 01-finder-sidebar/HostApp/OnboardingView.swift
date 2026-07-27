@@ -174,7 +174,7 @@ struct OnboardingView: View {
         case .cursor:
             title = detected ? "Cursor ✓" : L("Cursor Agent（未检测到）", "Cursor Agent (not found)")
         case .builtinAPI:
-            title = L("使用 API Key（目前只支持 DeepSeek）", "Use API Key (DeepSeek only for now)")
+            title = L("使用 API Key（仅Deepseek）", "Use API Key (DeepSeek only)")
         }
         let selected = brainChoice == kind
         return HStack(spacing: 8) {
