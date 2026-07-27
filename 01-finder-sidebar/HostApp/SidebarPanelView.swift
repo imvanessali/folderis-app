@@ -177,7 +177,7 @@ private struct HeaderBar: View {
                     chat.showHistory = false
                 }
             } else {
-                CircleIconButton(icon: "minus", help: L("收起为悬浮球", "Collapse to floating orb"), action: onCollapse)
+                CircleIconButton(icon: "minus", help: L("收起面板", "Collapse panel"), action: onCollapse)
                 // 新建对话 + 历史 合并成一个原生风格的胶囊按钮组。
                 PillIconGroup(items: [
                     .init(icon: "square.and.pencil", help: L("新建对话", "New chat")) {
