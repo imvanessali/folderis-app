@@ -138,4 +138,16 @@ if [ -z "$SIGN_PFX" ]; then
   echo "   (FOLDERIS_SIGN_REQUIRE=1 makes signing mandatory)." >&2
 fi
 
-echo "Windows release artifacts are in $DIST"
+# 最终分发物统一放仓库根 Release/<版本号>/（与 mac 共用 make_release.sh 里的
+# BUILD_VERSION，保证同一版本的两端产物落在同一目录）；dist/ 只是构建暂存。
+BUILD_VERSION=$(sed -n 's/^BUILD_VERSION="\(.*\)"/\1/p' ../01-finder-sidebar/make_release.sh)
+[ -n "$BUILD_VERSION" ] || { echo "无法从 ../01-finder-sidebar/make_release.sh 读取 BUILD_VERSION" >&2; exit 1; }
+RELEASE_DIR="../Release/$BUILD_VERSION"
+mkdir -p "$RELEASE_DIR"
+cp "$DIST/Folderis-Setup.exe" "$RELEASE_DIR/"
+(
+  cd "$RELEASE_DIR"
+  shasum -a 256 Folderis-Setup.exe
+) > "$RELEASE_DIR/Folderis-Windows-x64-SHA256.txt"
+
+echo "Windows release artifacts are in $RELEASE_DIR"

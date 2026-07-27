@@ -34,7 +34,7 @@ cd 01-finder-sidebar
 RUNTIME_SRC=/path/to/release-runtime ARCH=arm64 ./make_release_matrix.sh
 ```
 
-脚本会依次构建两个版本，并分别完成 App 公证/装订、DMG 公证/装订和 Gatekeeper/映像校验。最终产物和 SHA-256 清单位于 `01-finder-sidebar/dist/`。仅测试构建流程、不提交 Apple 公证时，可增加 `SKIP_NOTARIZE=1`。
+脚本会依次构建两个版本，并分别完成 App 公证/装订、DMG 公证/装订和 Gatekeeper/映像校验。最终产物和 SHA-256 清单统一发布到仓库根目录 `Release/<版本号>/`（Windows 的 `build_release.sh` 也发布到同一目录）；各子项目的 `dist/` 只是构建暂存。仅测试构建流程、不提交 Apple 公证时，可增加 `SKIP_NOTARIZE=1`。
 
 ## 使用
 

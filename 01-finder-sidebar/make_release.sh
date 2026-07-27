@@ -291,6 +291,7 @@ STAGE_MOUNT=""
 hdiutil convert "$RW" -format UDZO -o "$DMG" -ov >/dev/null
 rm -f "$RW"
 RW=""
+rm -rf dist/dmgroot
 codesign --force --timestamp -s "$IDENTITY" "$DMG"
 
 if [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
