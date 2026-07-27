@@ -3,13 +3,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# The supplied artwork has generous whitespace. Zoom the complete image as one
-# piece so the Folderis mark occupies roughly the same proportion as Dia's icon.
+# The supplied artwork already fills ~80% of the frame — the same proportion as
+# Dia's icon — so no crop/zoom is needed; just resample the master to 1024.
 SOURCE="${1:-AppIconSource.png}"
 MASTER="icon_1024.png"
 
-sips --cropToHeightWidth 768 768 "$SOURCE" --out "$MASTER" >/dev/null
-sips --resampleHeightWidth 1024 1024 "$MASTER" --out "$MASTER" >/dev/null
+sips --resampleHeightWidth 1024 1024 "$SOURCE" --out "$MASTER" >/dev/null
 
 mkdir -p AppIcon.iconset
 sips -z 16 16       "$MASTER" --out AppIcon.iconset/icon_16x16.png >/dev/null
