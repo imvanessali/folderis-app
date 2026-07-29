@@ -4,6 +4,11 @@ options:
   deploymentTarget:
     macOS: "13.0"
 
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.6.0
+
 targets:
   FinderSidebarHost:
     type: application
@@ -15,6 +20,11 @@ targets:
         NSAppleEventsUsageDescription: "需要读取 Finder 窗口位置，以便把聊天面板贴靠在 Finder 窗口旁边。"
         LSMinimumSystemVersion: "13.0"
         NSHighResolutionCapable: true
+        # Sparkle 自动更新：静默检查+下载；SUFeedURL/SUPublicEDKey 由
+        # make_release.sh 在发布时注入（开发构建无 feed，更新器自动禁用）。
+        SUEnableAutomaticChecks: true
+        SUAutomaticallyUpdate: true
+        SUScheduledCheckInterval: 86400
     entitlements:
       path: HostApp/HostApp.entitlements
       properties:
@@ -29,6 +39,7 @@ targets:
     dependencies:
       - target: FinderSidebarExt
         embed: true
+      - package: Sparkle
 
   FinderSidebarExt:
     type: app-extension

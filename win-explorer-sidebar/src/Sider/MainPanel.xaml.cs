@@ -20,6 +20,8 @@ public partial class MainPanel : Window
     private ExplorerContext? _pendingContext;
     private CancellationTokenSource? _cts;
     private readonly CliBackend _cliBackend = new();
+    private readonly UpdaterService _updater = new();
+    private bool _updateDismissed;
 
     public MainPanel()
     {
@@ -71,6 +73,43 @@ public partial class MainPanel : Window
             }
         };
         UpdateEmptyState();
+
+        // 自动更新：后台静默检查+下载，就绪后只出横幅（必须在 UI 线程构造，
+        // NetSparkle 用当前 SynchronizationContext 把事件抛回来）。
+        UpdateRestartButton.Content = L10n.T("立即重启", "Restart now");
+        UpdateLaterButton.Content = L10n.T("稍后", "Later");
+        _updater.StateChanged += () => Dispatcher.BeginInvoke(RefreshUpdateBanner);
+        _updater.Start();
+    }
+
+    /// <summary>
+    /// 更新横幅：新版下载就绪、AI 空闲、非历史页、用户本次没点“稍后”才显示。
+    /// AI 正在流式回复或跑工具循环时一律挂起，等空闲再出现。
+    /// </summary>
+    private void RefreshUpdateBanner()
+    {
+        var show = _updater.IsReady && !_updateDismissed && !_sending && !_showingHistory;
+        if (show)
+            UpdateBannerText.Text = L10n.T(
+                $"新版本 {_updater.ReadyVersion} 已就绪，重启生效",
+                $"Version {_updater.ReadyVersion} is ready — restart to apply");
+        UpdateBanner.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void OnUpdateRestartClick(object sender, RoutedEventArgs e)
+    {
+        SaveConversation();          // 先落盘会话，安装脚本会等本进程退出
+        UpdateRestartButton.IsEnabled = false;
+        UpdateBannerText.Text = L10n.T("正在安装新版本，稍后自动重启…",
+                                       "Installing the update — Folderis will restart…");
+        _updater.InstallAndRestart();
+    }
+
+    /// <summary>“稍后”只收起本次运行的横幅；下次启动仍会提示。</summary>
+    private void OnUpdateLaterClick(object sender, RoutedEventArgs e)
+    {
+        _updateDismissed = true;
+        RefreshUpdateBanner();
     }
 
     private void OnContextChanged(ExplorerContext? ctx)
@@ -117,6 +156,7 @@ public partial class MainPanel : Window
         _sending = sending;
         SendButton.Content = sending ? "\uE71A" : "\uE74A";
         SendButton.ToolTip = sending ? L10n.T("停止", "Stop") : L10n.T("发送", "Send");
+        RefreshUpdateBanner();       // 忙碌时收起更新横幅，空闲后再出现
         if (!sending && _pendingContext is { } pending)
         {
             _pendingContext = null;
@@ -694,6 +734,7 @@ public partial class MainPanel : Window
         RemoveEmptyState();
         PopulateHistoryList();
         HistoryScroll.Visibility = Visibility.Visible;
+        RefreshUpdateBanner();
     }
 
     private void OnDoneClick(object sender, RoutedEventArgs e) => ExitHistoryPage();
@@ -710,6 +751,7 @@ public partial class MainPanel : Window
         ChatScroll.Visibility = Visibility.Visible;
         SyncChips();
         UpdateEmptyState();
+        RefreshUpdateBanner();
     }
 
     private void PopulateHistoryList()

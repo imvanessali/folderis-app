@@ -122,6 +122,31 @@ cp -R ".xcbuild/Build/Products/Release/$BUILD_PRODUCT" "$APP"
 plutil -replace CFBundleShortVersionString -string "$APP_VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$BUILD_VERSION" "$APP/Contents/Info.plist"
 
+# —— Sparkle 自动更新键 ——
+# 开发构建没有这些键,更新器自动禁用;发布件必须带 feed 地址和 EdDSA 公钥。
+# 公钥来源:FOLDERIS_SPARKLE_PUBLIC_KEY 环境变量,否则从发布机钥匙串读
+# (generate_keys -p)。两者都拿不到时:正式发布直接失败,SKIP_NOTARIZE=1
+# 的流程测试构建则警告后跳过(产物不带自动更新)。
+UPDATE_BASE_URL="${FOLDERIS_UPDATE_BASE_URL:-https://dl.folderis.app}"
+SPARKLE_TOOLS=".xcbuild/SourcePackages/artifacts/sparkle/Sparkle/bin"
+[ -x "$SPARKLE_TOOLS/generate_keys" ] || SPARKLE_TOOLS=".build/artifacts/sparkle/Sparkle/bin"
+ED_PUBLIC_KEY="${FOLDERIS_SPARKLE_PUBLIC_KEY:-}"
+if [ -z "$ED_PUBLIC_KEY" ] && [ -x "$SPARKLE_TOOLS/generate_keys" ]; then
+  ED_PUBLIC_KEY=$("$SPARKLE_TOOLS/generate_keys" -p 2>/dev/null || true)
+fi
+if [ -n "$ED_PUBLIC_KEY" ]; then
+  plutil -replace SUFeedURL -string "$UPDATE_BASE_URL/mac/appcast-$ARCH.xml" "$APP/Contents/Info.plist"
+  plutil -replace SUPublicEDKey -string "$ED_PUBLIC_KEY" "$APP/Contents/Info.plist"
+  echo "Sparkle feed: $UPDATE_BASE_URL/mac/appcast-$ARCH.xml"
+elif [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
+  echo "⚠️  未配置 Sparkle EdDSA 公钥,本测试构建不带自动更新。"
+else
+  echo "错误:发布件必须带 Sparkle 公钥。先生成密钥(一次性,并备份私钥):"
+  echo "  $SPARKLE_TOOLS/generate_keys"
+  echo "或设置 FOLDERIS_SPARKLE_PUBLIC_KEY。"
+  exit 1
+fi
+
 echo "== 2/8 内嵌运行时 =="
 RT="$APP/Contents/Resources/runtime"
 mkdir -p "$RT/bin" "$RT/skills"
@@ -190,6 +215,21 @@ find "$RT" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 | \
   xargs -0 -n 20 codesign --force --timestamp -s "$IDENTITY"
 find "$RT/python/bin" "$RT/bin" -type f -perm +111 -print0 | \
   xargs -0 -n 1 codesign --force --timestamp --options runtime -s "$IDENTITY"
+# Sparkle.framework:Xcode 构建期用的是 Apple Development 证书签的,
+# 公证要求全部嵌套代码都是 Developer ID——由内向外重签
+# (XPC 服务保留自带的沙箱 entitlements)。
+SPARKLE_FW="$APP/Contents/Frameworks/Sparkle.framework"
+if [ -d "$SPARKLE_FW" ]; then
+  codesign --force --timestamp --options runtime --preserve-metadata=entitlements \
+    -s "$IDENTITY" "$SPARKLE_FW/Versions/B/XPCServices/Installer.xpc"
+  codesign --force --timestamp --options runtime --preserve-metadata=entitlements \
+    -s "$IDENTITY" "$SPARKLE_FW/Versions/B/XPCServices/Downloader.xpc"
+  codesign --force --timestamp --options runtime \
+    -s "$IDENTITY" "$SPARKLE_FW/Versions/B/Autoupdate"
+  codesign --force --timestamp --options runtime \
+    -s "$IDENTITY" "$SPARKLE_FW/Versions/B/Updater.app"
+  codesign --force --timestamp --options runtime -s "$IDENTITY" "$SPARKLE_FW"
+fi
 # 内嵌 Finder 扩展：必须先于外层用 Developer ID 重签
 # （用发布权限文件，自动剥离 Xcode 构建带上的 get-task-allow 调试权限）
 if [ -d "$APP/Contents/PlugIns/FinderSidebarExt.appex" ]; then
@@ -316,4 +356,10 @@ spctl --assess --type execute --verbose=2 "$APP"
 xcrun stapler validate "$DMG"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 hdiutil verify "$DMG" >/dev/null
+
+echo "== 9/9 生成 Sparkle appcast =="
+ARCH="$ARCH" APP_VERSION="$APP_VERSION" BUILD_VERSION="$BUILD_VERSION" \
+  ./make_appcast.sh "$DMG"
+
 echo "完成：${DMG}（$(du -h "$DMG" | cut -f1)）——可直接分发，下载后双击即用，无任何警告。"
+echo "推送更新：运行仓库根目录的 publish_release.sh 上传 DMG 与 appcast 到 R2。"
