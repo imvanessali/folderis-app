@@ -61,6 +61,9 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var boundSelection: [URL] = []
     /// Convenience projection for single regular-file UI and legacy keys.
     @Published private(set) var boundFile: URL?
+    /// 当前绑定的会话目录 key。绑定建立时按文件身份（设备号+inode）算好并缓存：
+    /// 目标随后被重命名/移动，目录也不变，历史不丢。
+    private var boundKey = "global"
 
     /// A shell command the model wants to run, awaiting the user's decision.
     /// The agent loop is suspended on the continuation until approve/deny.
@@ -196,10 +199,14 @@ final class ChatViewModel: ObservableObject {
         cancelPendingCommand()
         isSending = false
         subagents = []
-        persistOrPurgeCurrent()
+        // 旧绑定的历史一律保存保留：旧路径此刻不存在多半是刚被重命名
+        // （文件身份不变，同一目录会随新路径接回）；真删除留下的孤儿目录无害。
+        saveHistory()
         boundFolder = normalizedFolder
         boundSelection = normalizedSelection
         boundFile = normalizedFile
+        boundKey = Self.historyKey(folder: normalizedFolder, selection: normalizedSelection,
+                                   file: normalizedFile, token: Self.bindingToken, sortTokens: true)
         errorMessage = nil
         showHistory = false
         loadFolder()
@@ -219,36 +226,24 @@ final class ChatViewModel: ObservableObject {
         return isDirectory.boolValue ? nil : url
     }
 
-    /// Conversations die with their binding target: if the bound file/folder
-    /// was deleted, remove its persisted conversations instead of letting
-    /// them carry over to whatever Finder shows next.
-    private func persistOrPurgeCurrent() {
-        let targets = boundSelection.isEmpty ? [boundFolder].compactMap { $0 } : boundSelection
-        guard !targets.isEmpty else {
-            saveHistory()
-            return
-        }
-        if targets.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) {
-            saveHistory()
-        } else {
-            try? FileManager.default.removeItem(at: folderDir)
-            messages = []
-        }
-    }
-
-    /// Called on every Finder poll tick; kills the session in place when the
-    /// file/folder it is bound to no longer exists.
+    /// Called on every Finder poll tick; detaches the session in place when the
+    /// file/folder it is bound to no longer exists at its old path. 历史文件
+    /// 一律保留在磁盘上：路径消失很可能只是重命名（文件身份不变，下次轮询
+    /// 会经由身份 key 自动接回同一份历史），删除会造成不可恢复的丢失。
     func validateBoundTarget() {
+        // 任务执行中不动绑定：重命名很可能就是我们自己的任务做的，
+        // 完成后的下一次轮询会应用最新的 Finder 上下文。
+        guard !isSending else { return }
         if !boundSelection.isEmpty,
            boundSelection.contains(where: { !FileManager.default.fileExists(atPath: $0.path) }) {
             sendTask?.cancel()
             terminateCLIProcess()
             cancelPendingCommand()
-            isSending = false
             subagents = []
-            try? FileManager.default.removeItem(at: folderDir)
             boundSelection = []
             boundFile = nil
+            boundKey = Self.historyKey(folder: boundFolder, selection: [], file: nil,
+                                       token: Self.bindingToken, sortTokens: true)
             messages = []
             errorMessage = nil
             loadFolder()
@@ -259,13 +254,12 @@ final class ChatViewModel: ObservableObject {
         sendTask?.cancel()
         terminateCLIProcess()
         cancelPendingCommand()
-        isSending = false
         subagents = []
-        try? FileManager.default.removeItem(at: folderDir)
         messages = []
         boundFolder = nil
         boundSelection = []
         boundFile = nil
+        boundKey = "global"
         errorMessage = nil
         loadFolder()
     }
@@ -286,6 +280,11 @@ final class ChatViewModel: ObservableObject {
     /// Only reacts when the selection actually changes, so a chip the user
     /// removed by hand stays removed until they select something else.
     func syncSelection(_ urls: [URL]) {
+        // 任务执行中冻结镜像（与 switchTarget 的 isSending 冻结对齐，也与
+        // Windows 端 _pendingContext 行为一致）：绑定不动时 chips 若继续跟随
+        // Finder 选择，会显示与绑定不一致的文件（如用户中途点开别的文件）。
+        // 不记录 lastSyncedSelection，任务结束后下一次轮询会自然同步。
+        guard !isSending else { return }
         guard urls != lastSyncedSelection else { return }
         lastSyncedSelection = urls
         attachedFiles = urls
@@ -317,7 +316,7 @@ final class ChatViewModel: ObservableObject {
            !settings.provider.supportsVision,
            let notice = Self.deepSeekCapabilityNotice(request: text, files: files) {
             let fileContext = files.isEmpty ? nil :
-                "以下是用户选中/附上的文件：\n\n" + files.map { "文件 `\($0.path)`" }.joined(separator: "\n")
+                Self.attachmentScopeHeader + files.map { "文件 `\($0.path)`" }.joined(separator: "\n")
             let contextBlock = [fileContext, referencedTask].compactMap { $0 }.joined(separator: "\n\n")
             messages.append(ChatMessage(role: .user, taskID: taskID, text: text,
                                         promptContext: contextBlock.isEmpty ? nil : contextBlock))
@@ -362,7 +361,7 @@ final class ChatViewModel: ObservableObject {
             // 文件上下文只送给模型，不在气泡里复读（用户自己选的文件）。
             let fileContext: String? = prepared.descriptions.isEmpty
                 ? nil
-                : "以下是用户选中/附上的文件：\n\n" + prepared.descriptions.joined(separator: "\n\n")
+                : Self.attachmentScopeHeader + prepared.descriptions.joined(separator: "\n\n")
             let combinedContext = [fileContext, referencedTask].compactMap { $0 }.joined(separator: "\n\n")
 
             let userMessage = ChatMessage(
@@ -671,8 +670,15 @@ final class ChatViewModel: ObservableObject {
     var backendSessionIDs: [String: String] = [:]
     private var cliProcess: Process?
 
+    /// 附件上下文的统一开头：明确“选中/附上的文件 = 本次任务的全部输入范围”，
+    /// 防止模型以“任务未指定单张”为由扩大到同文件夹的其他文件。
+    nonisolated static let attachmentScopeHeader =
+        "以下是用户选中/附上的文件，它们就是本次任务的全部输入范围。" +
+        "任务描述没有点名对象时，对象就是这些文件，而不是所在文件夹；" +
+        "除非用户明确要求，绝不能把操作扩大到范围之外的其他文件，即使它们相似或适用同样的操作：\n\n"
+
     private static let cliScopePolicy = """
-    执行边界：严格按用户指定的文件、页码、数量和格式处理，不擅自扩大为全量或批量。只要求查看/回答内容时直接回复，不创建文件；只有明确要求保存/导出时才生成最终文件。凡是文件处理产物，默认保留原文件和每一次历史产物，并把本次结果另存为唯一的新文件；相同任务重复执行也必须生成 _2、_3 等新名称，用户指定输出名不等于允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖，只有用户明确说“覆盖原文件/原地修改”时才可覆盖。不得创建未要求的副本、拆分页、逐页图片或全量文本；必要中间文件必须放在操作系统临时目录（macOS 使用 /tmp 或 NSTemporaryDirectory，Windows 使用 %TEMP%），不得在用户文件夹内创建 tmp/output 等工作目录，并在结束前清理。范围歧义会导致不同产物时先简短询问。提取 PDF 文字必须逐页 OCR，且只 OCR 用户指定页码。不要把计划、准备步骤或“我先……”当作最终回复；必须实际完成任务并验证最终文件后再结束，无法完成时明确说明失败原因。
+    执行边界：严格按用户指定的文件、页码、数量和格式处理，不擅自扩大为全量或批量。用户消息中列出的选中/附上文件就是本次任务的全部输入范围：任务未点名对象时即以这些文件为对象，绝不能因为同文件夹其他文件相似或“批量处理更一致”而扩大到列表之外。只要求查看/回答内容时直接回复，不创建文件；只有明确要求保存/导出时才生成最终文件。凡是文件处理产物，默认保留原文件和每一次历史产物，并把本次结果另存为唯一的新文件；相同任务重复执行也必须生成 _2、_3 等新名称，用户指定输出名不等于允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖，只有用户明确说“覆盖原文件/原地修改”时才可覆盖。不得创建未要求的副本、拆分页、逐页图片或全量文本；必要中间文件必须放在操作系统临时目录（macOS 使用 /tmp 或 NSTemporaryDirectory，Windows 使用 %TEMP%），不得在用户文件夹内创建 tmp/output 等工作目录，并在结束前清理。范围歧义会导致不同产物时先简短询问。提取 PDF 文字必须逐页 OCR，且只 OCR 用户指定页码。不要把计划、准备步骤或“我先……”当作最终回复；必须实际完成任务并验证最终文件后再结束，无法完成时明确说明失败原因。
     """
 
     func runCLIBackendTurn(userMessage: ChatMessage) async throws {
@@ -1197,6 +1203,7 @@ final class ChatViewModel: ObservableObject {
 
         处理任务的方式：
         - 严格遵守用户指定的对象、页码、数量和输出格式，只做完成请求必需的操作；用户只问一页就只处理该页，绝不能擅自扩展为整个文件或所有页面。
+        - 用户消息中列出的“选中/附上的文件”就是本次任务的全部输入范围：任务描述没有点名对象时，对象就是这些文件，而不是所在文件夹；绝不能因为文件夹里其他文件相似、或“批量处理更一致”而扩大到列表之外。
         - 用户只要求查看、读取、分析或回答内容时，直接在聊天中返回结果，不创建文件。只有用户明确说保存、导出或生成文件时才创建对应的最终文件。
         - 使用 run_skill 生成产物时，默认保留原文件和每一次历史产物，本次结果必须使用唯一的新文件名；相同任务重复执行要自动使用 _2、_3 等名称，即使用户指定 --output 也不代表允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖；只有用户明确要求“覆盖原文件/原地修改”时，才可传 --overwrite-original，涉及 --in-place 时必须同时传两者。禁止把 --output 指向输入文件。
         - 不创建用户没要求的副本、拆分页、逐页图片、全量文本或其他衍生物。工具确需中间文件时只能放系统临时目录，并在结束前清理。
@@ -2443,14 +2450,37 @@ final class ChatViewModel: ObservableObject {
         return nil
     }
 
-    private var folderKey: String {
+    /// 文件身份 token：设备号 + inode，重命名/同卷移动后保持不变；
+    /// 取不到时（如目标暂不可达的网络卷）退回绝对路径。
+    nonisolated private static func bindingToken(_ url: URL) -> String {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        if let device = (attrs?[.systemNumber] as? NSNumber)?.uint64Value,
+           let inode = (attrs?[.systemFileNumber] as? NSNumber)?.uint64Value {
+            return "id:\(device)-\(inode)"
+        }
+        return url.path
+    }
+
+    /// 会话目录 key：对绑定目标逐项取 token 后哈希。token 传
+    /// `bindingToken`（身份，正常路径）或 `{ $0.path }`（旧版路径 key，
+    /// 仅用于存量迁移）。
+    /// sortTokens: 身份 key 必须传 true——多选的 token 按自身排序后哈希，
+    /// 与路径字典序解耦（重命名改变选中项排序也不换 key）。旧版路径 key
+    /// 按 boundSelection 原有次序串接，legacy 迁移计算时保持 false 以复现旧算法。
+    nonisolated private static func historyKey(
+        folder: URL?, selection: [URL], file: URL?,
+        token: (URL) -> String,
+        sortTokens: Bool = false
+    ) -> String {
         let basis: String
-        if boundSelection.count == 1, let file = boundFile {
-            basis = "file:" + file.path
-        } else if !boundSelection.isEmpty {
-            basis = "selection:" + boundSelection.map(\.path).joined(separator: "\n")
-        } else if let folder = boundFolder {
-            basis = folder.path
+        if selection.count == 1, let file {
+            basis = "file:" + token(file)
+        } else if !selection.isEmpty {
+            var tokens = selection.map(token)
+            if sortTokens { tokens.sort() }
+            basis = "selection:" + tokens.joined(separator: "\n")
+        } else if let folder {
+            basis = token(folder)
         } else {
             return "global"
         }
@@ -2459,8 +2489,9 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// Directory holding all conversations of the current folder.
+    /// Key 在绑定建立时算好并缓存在 boundKey：目标随后被重命名也不换目录。
     private var folderDir: URL {
-        Self.historyDir.appendingPathComponent(folderKey, isDirectory: true)
+        Self.historyDir.appendingPathComponent(boundKey, isDirectory: true)
     }
 
     private func conversationFileURL(_ id: UUID) -> URL {
@@ -2470,6 +2501,7 @@ final class ChatViewModel: ObservableObject {
     /// Loads the folder's conversation list and opens the most recent one
     /// (or starts fresh if the folder has none).
     private func loadFolder() {
+        migratePathKeyDirIfNeeded()
         try? FileManager.default.createDirectory(at: folderDir, withIntermediateDirectories: true)
         migrateLegacyHistoryIfNeeded()
         refreshConversationList()
@@ -2547,10 +2579,25 @@ final class ChatViewModel: ObservableObject {
         return line.count > 24 ? String(line.prefix(24)) + "…" : line
     }
 
+    /// 身份 key 启用前目录名按绝对路径哈希；首次访问时把旧目录整个搬到
+    /// 身份 key 目录下（目标还在原路径时两个 key 都能算出来）。
+    private func migratePathKeyDirIfNeeded() {
+        let dir = folderDir
+        guard !FileManager.default.fileExists(atPath: dir.path) else { return }
+        let legacyKey = Self.historyKey(folder: boundFolder, selection: boundSelection,
+                                        file: boundFile, token: { $0.path })
+        guard legacyKey != boundKey else { return }
+        let legacyDir = Self.historyDir.appendingPathComponent(legacyKey, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: legacyDir.path) else { return }
+        try? FileManager.default.moveItem(at: legacyDir, to: dir)
+    }
+
     /// Old scheme stored one flat file per folder; fold it into the new
     /// per-conversation directory once.
     private func migrateLegacyHistoryIfNeeded() {
-        let legacy = Self.historyDir.appendingPathComponent("\(folderKey).json")
+        let legacyKey = Self.historyKey(folder: boundFolder, selection: boundSelection,
+                                        file: boundFile, token: { $0.path })
+        let legacy = Self.historyDir.appendingPathComponent("\(legacyKey).json")
         guard FileManager.default.fileExists(atPath: legacy.path),
               let data = try? Data(contentsOf: legacy),
               let payload = try? JSONDecoder().decode(PersistedHistory.self, from: data) else { return }
@@ -2561,10 +2608,10 @@ final class ChatViewModel: ObservableObject {
             updatedAt: payload.updatedAt ?? Date(),
             items: payload.items
         )
-        if let out = try? JSONEncoder().encode(migrated) {
-            try? out.write(to: conversationFileURL(UUID()), options: .atomic)
+        if let out = try? JSONEncoder().encode(migrated),
+           (try? out.write(to: conversationFileURL(UUID()), options: .atomic)) != nil {
+            try? FileManager.default.removeItem(at: legacy)
         }
-        try? FileManager.default.removeItem(at: legacy)
     }
 }
 

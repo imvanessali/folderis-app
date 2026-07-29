@@ -207,8 +207,18 @@ final class FinderWindowTracker: ObservableObject {
     private static func isStandardWindow(_ element: AXUIElement) -> Bool {
         var subroleValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleValue) == .success,
-              let subrole = subroleValue as? String else { return false }
-        return subrole == kAXStandardWindowSubrole as String
+              let subrole = subroleValue as? String,
+              subrole == kAXStandardWindowSubrole as String else { return false }
+        // 「简介」（Get Info）等辅助窗口的 subrole 也是 AXStandardWindow，
+        // 面板不应停靠过去。靠 AXIdentifier 区分（与系统语言无关）：
+        // 浏览器窗口 = "FinderWindow"，简介窗口 = "Info"。
+        // 取不到 identifier 时保持旧行为，只按 subrole 判定。
+        var identifierValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &identifierValue) == .success,
+           let identifier = identifierValue as? String, !identifier.isEmpty {
+            return identifier == "FinderWindow"
+        }
+        return true
     }
 
     private var frontWindowElement: AXUIElement?

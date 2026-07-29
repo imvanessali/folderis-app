@@ -515,17 +515,39 @@ public partial class MainPanel : Window
         catch { return path.TrimEnd(Path.DirectorySeparatorChar); }
     }
 
+    /// 绑定项 token：`<NTFS身份>|<规范化路径>`。身份在重命名/同卷移动后不变，
+    /// 是匹配的首选依据；路径用于显示和身份不可用时的兜底比较。
+    private static string BindingToken(string path)
+    {
+        var canonical = CanonicalPath(path);
+        var identity = FileIdentity.TryGet(canonical);
+        return identity is null ? canonical : identity + "|" + canonical;
+    }
+
+    private static string TokenPath(string token)
+    {
+        var sep = token.IndexOf('|');
+        return sep >= 0 ? token[(sep + 1)..] : token;
+    }
+
+    private static string? TokenIdentity(string token)
+    {
+        var sep = token.IndexOf('|');
+        return sep > 0 && token.StartsWith("id:", StringComparison.Ordinal)
+            ? token[..sep] : null;
+    }
+
     private static string? BindingKey(ExplorerContext? context)
     {
         if (string.IsNullOrWhiteSpace(context?.FolderPath)) return null;
         var selected = context.SelectedPaths
             .Where(p => !string.IsNullOrWhiteSpace(p))
-            .Select(CanonicalPath)
+            .Select(BindingToken)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(TokenPath, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         return selected.Length == 0
-            ? FolderBindingPrefix + CanonicalPath(context.FolderPath!)
+            ? FolderBindingPrefix + BindingToken(context.FolderPath!)
             : SelectionBindingPrefix + string.Join("\n", selected);
     }
 
@@ -540,8 +562,50 @@ public partial class MainPanel : Window
         return File.Exists(path) ? SelectionBindingPrefix + path : FolderBindingPrefix + path;
     }
 
-    private static bool SameBinding(string? a, string? b) =>
-        string.Equals(NormalizeStoredBinding(a), NormalizeStoredBinding(b), StringComparison.OrdinalIgnoreCase);
+    /// 单项匹配：两侧都带 NTFS 身份时按身份比较（重命名后仍相等），
+    /// 否则退回路径比较（存量纯路径绑定、身份不可用的卷）。
+    private static bool SameTokenItem(string a, string b)
+    {
+        var idA = TokenIdentity(a);
+        var idB = TokenIdentity(b);
+        if (idA is not null && idB is not null)
+            return string.Equals(idA, idB, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(TokenPath(a), TokenPath(b), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool SameBinding(string? a, string? b)
+    {
+        var na = NormalizeStoredBinding(a);
+        var nb = NormalizeStoredBinding(b);
+        if (na is null || nb is null) return na == nb;
+
+        static (string prefix, string payload) Split(string s) =>
+            s.StartsWith(SelectionBindingPrefix, StringComparison.OrdinalIgnoreCase)
+                ? (SelectionBindingPrefix, s[SelectionBindingPrefix.Length..])
+                : (FolderBindingPrefix, s[FolderBindingPrefix.Length..]);
+        var (prefixA, payloadA) = Split(na);
+        var (prefixB, payloadB) = Split(nb);
+        if (!string.Equals(prefixA, prefixB, StringComparison.OrdinalIgnoreCase)) return false;
+
+        var itemsA = payloadA.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var itemsB = payloadB.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        if (itemsA.Length != itemsB.Length) return false;
+        // 重命名会改变按路径排序的次序，按多重集合贪心配对而非按下标。
+        var used = new bool[itemsB.Length];
+        foreach (var item in itemsA)
+        {
+            var matched = false;
+            for (var i = 0; i < itemsB.Length; i++)
+            {
+                if (used[i] || !SameTokenItem(item, itemsB[i])) continue;
+                used[i] = true;
+                matched = true;
+                break;
+            }
+            if (!matched) return false;
+        }
+        return true;
+    }
 
     private static string BindingLabel(string binding)
     {
@@ -551,12 +615,12 @@ public partial class MainPanel : Window
             var items = normalized[SelectionBindingPrefix.Length..]
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries);
             return items.Length == 1
-                ? Path.GetFileName(items[0].TrimEnd(Path.DirectorySeparatorChar))
+                ? Path.GetFileName(TokenPath(items[0]).TrimEnd(Path.DirectorySeparatorChar))
                 : L10n.T($"{items.Length} 个项目", $"{items.Length} items");
         }
         var folder = normalized.StartsWith(FolderBindingPrefix, StringComparison.OrdinalIgnoreCase)
             ? normalized[FolderBindingPrefix.Length..] : normalized;
-        return Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar));
+        return Path.GetFileName(TokenPath(folder).TrimEnd(Path.DirectorySeparatorChar));
     }
 
     private static string BindingDetails(string? binding)
@@ -565,9 +629,10 @@ public partial class MainPanel : Window
         var normalized = NormalizeStoredBinding(binding) ?? binding;
         if (normalized.StartsWith(SelectionBindingPrefix, StringComparison.OrdinalIgnoreCase))
             return string.Join("\n", normalized[SelectionBindingPrefix.Length..]
-                .Split('\n', StringSplitOptions.RemoveEmptyEntries));
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(TokenPath));
         return normalized.StartsWith(FolderBindingPrefix, StringComparison.OrdinalIgnoreCase)
-            ? normalized[FolderBindingPrefix.Length..] : normalized;
+            ? TokenPath(normalized[FolderBindingPrefix.Length..]) : normalized;
     }
 
     private string? _boundBinding;
@@ -633,7 +698,13 @@ public partial class MainPanel : Window
     private void SwitchConversation(string? binding)
     {
         binding = NormalizeStoredBinding(binding);
-        if (SameBinding(binding, _boundBinding)) return;
+        if (SameBinding(binding, _boundBinding))
+        {
+            // 同一身份的最新形式：目标刚被重命名时路径部分会变，采纳新路径
+            // 让后续 SaveConversation 把存量绑定自愈成当前路径。
+            _boundBinding = binding;
+            return;
+        }
         if (_sending) _cts?.Cancel();
         SaveConversation();
         _boundBinding = binding;
@@ -753,7 +824,7 @@ public partial class MainPanel : Window
             .ToArray();
         if (conversations.Length == 0)
         {
-            HistoryList.Children.Add(new TextBlock
+            HistoryList.Children.Add(new SelectableText
             {
                 Text = L10n.T("当前绑定还没有历史对话", "No chat history for this binding yet"),
                 Foreground = Brushes.Gray,
@@ -773,14 +844,14 @@ public partial class MainPanel : Window
                 ? time : DateTime.MinValue;
 
             var labels = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            labels.Children.Add(new TextBlock
+            labels.Children.Add(new SelectableText
             {
                 Text = title,
                 FontSize = 12,
-                TextTrimming = TextTrimming.CharacterEllipsis,
+                TextWrapping = TextWrapping.NoWrap,   // TextBox 不支持省略号，单行裁剪
                 MaxWidth = 205
             });
-            labels.Children.Add(new TextBlock
+            labels.Children.Add(new SelectableText
             {
                 Text = RelativeHistoryDate(updated),
                 Foreground = Brushes.Gray,
@@ -800,7 +871,7 @@ public partial class MainPanel : Window
                     CornerRadius = new CornerRadius(6),
                     Padding = new Thickness(6, 2, 6, 2),
                     VerticalAlignment = VerticalAlignment.Center,
-                    Child = new TextBlock
+                    Child = new SelectableText
                     {
                         Text = L10n.T("当前", "Current"),
                         Foreground = new SolidColorBrush(Color.FromRgb(0, 103, 192)),
@@ -1065,7 +1136,10 @@ public partial class MainPanel : Window
 
         var pureConversation = IsPureConversation(text);
         var fileContext = !pureConversation && _attached.Count > 0
-            ? "用户选中的文件：\n" + string.Join("\n", _attached) // 模型侧文案，无需双语
+            ? "以下是用户选中/附上的文件，它们就是本次任务的全部输入范围。" +
+              "任务描述没有点名对象时，对象就是这些文件，而不是所在文件夹；" +
+              "除非用户明确要求，绝不能把操作扩大到范围之外的其他文件，即使它们相似或适用同样的操作：\n" +
+              string.Join("\n", _attached) // 模型侧文案，无需双语
             : null;
         string? contextBlock = string.Join("\n\n", new[] { fileContext, referencedTask }
             .Where(s => !string.IsNullOrWhiteSpace(s)));
@@ -1095,7 +1169,7 @@ public partial class MainPanel : Window
         }
 
         SelectableText? replyRef = null;
-        var typing = new TextBlock
+        var typing = new SelectableText
         {
             Text = L10n.T("思考中…", "Thinking…"),
             Foreground = System.Windows.Media.Brushes.Gray,
@@ -1149,6 +1223,7 @@ public partial class MainPanel : Window
 
             处理任务的方式：
             - 严格遵守用户指定的对象、页码、数量和输出格式，只做完成请求必需的操作；用户只问一页就只处理该页，绝不能擅自扩展为整个文件或所有页面。
+            - 用户消息中列出的“选中/附上的文件”就是本次任务的全部输入范围：任务描述没有点名对象时，对象就是这些文件，而不是所在文件夹；绝不能因为文件夹里其他文件相似、或“批量处理更一致”而扩大到列表之外。
             - 用户只要求查看、读取、分析或回答内容时，直接在聊天中返回结果，不创建文件。只有用户明确说保存、导出或生成文件时才创建对应的最终文件。
             - 使用 run_skill 生成产物时，默认保留原文件和每一次历史产物，本次结果必须使用唯一的新文件名；相同任务重复执行要自动使用 _2、_3 等名称，即使用户指定 --output 也不代表允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖；只有用户明确要求“覆盖原文件/原地修改”时，才可传 --overwrite-original，涉及 --in-place 时必须同时传两者。禁止把 --output 指向输入文件。
             - 不创建用户没要求的副本、拆分页、逐页图片、全量文本或其他衍生物。工具确需中间文件时只能放系统临时目录，并在结束前清理。
@@ -1233,6 +1308,7 @@ public partial class MainPanel : Window
                     ?? throw new InvalidOperationException(L10n.T($"未检测到 {_settings.Backend} CLI", $"{_settings.Backend} CLI not found"));
                 var cliPrompt =
                     "执行边界：严格按用户指定的文件、页码、数量和格式处理，不擅自扩大为全量或批量。" +
+                    "用户消息中列出的选中/附上文件就是本次任务的全部输入范围：任务未点名对象时即以这些文件为对象，绝不能因为同文件夹其他文件相似或批量处理更一致而扩大到列表之外。" +
                     "只要求查看或回答内容时直接回复，不创建文件；只有明确要求保存或导出时才生成最终文件。" +
                     "凡是文件处理产物，默认保留原文件和每一次历史产物，并把本次结果另存为唯一的新文件；相同任务重复执行也必须生成 _2、_3 等新名称，用户指定输出名不等于允许覆盖。普通的处理、优化、压缩或转换不代表允许覆盖，只有用户明确说覆盖原文件或原地修改时才可覆盖。" +
                     "不得创建未要求的副本、拆分页、逐页图片或全量文本；必要中间文件必须放在 %TEMP%，不得在用户文件夹内创建 tmp 或 output 工作目录，并在结束前清理。" +
@@ -1439,17 +1515,54 @@ public partial class MainPanel : Window
         };
         if (isUser && !string.IsNullOrWhiteSpace(taskId))
         {
-            var label = new SelectableText
+            // 点击复制任务编号 + 短暂提示怎么引用（对齐 mac TaskIDChip）。
+            var copiedTip = new TextBlock
+            {
+                Text = L10n.T("已复制 · 在任意对话输入该编号即可引用此任务",
+                              "Copied — type it in any chat to reference this task"),
+                FontSize = 9,
+                Foreground = Brushes.Gray,
+                Margin = new Thickness(0, 0, 6, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed
+            };
+            var label = new TextBlock
             {
                 Text = taskId,
                 FontFamily = new FontFamily("Consolas"),
                 FontSize = 9,
                 Foreground = Brushes.Gray,
-                HorizontalAlignment = HorizontalAlignment.Right,
+                Cursor = Cursors.Hand,
+                ToolTip = L10n.T("点击复制任务编号", "Click to copy the task ID"),
                 Margin = new Thickness(0, 0, 2, 1)
             };
+            System.Windows.Threading.DispatcherTimer? hideTipTimer = null;
+            label.MouseLeftButtonUp += (_, _) =>
+            {
+                try { Clipboard.SetText(taskId); }
+                catch (System.Runtime.InteropServices.COMException) { return; }   // 剪贴板被其他进程占用
+                copiedTip.Visibility = Visibility.Visible;
+                hideTipTimer?.Stop();
+                hideTipTimer = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(2.5)
+                };
+                hideTipTimer.Tick += (_, _) =>
+                {
+                    copiedTip.Visibility = Visibility.Collapsed;
+                    hideTipTimer.Stop();
+                };
+                hideTipTimer.Start();
+            };
+            var idRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            idRow.Children.Add(copiedTip);
+            idRow.Children.Add(label);
             var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right };
-            stack.Children.Add(label);
+            stack.Children.Add(idRow);
             stack.Children.Add(border);
             ChatList.Children.Add(stack);
         }
