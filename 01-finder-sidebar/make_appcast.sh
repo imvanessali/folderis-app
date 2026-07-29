@@ -46,13 +46,13 @@ SPARKLE_BIN=$(find_sparkle_bin) || {
   exit 0
 }
 
-SIGN_ARGS=()
-if [ -n "${FOLDERIS_SPARKLE_KEY_FILE:-}" ]; then
-  SIGN_ARGS=(-f "$FOLDERIS_SPARKLE_KEY_FILE")
-fi
-
 # sign_update 输出形如:sparkle:edSignature="…" length="…"
-SIGNATURE_ATTRS=$("$SPARKLE_BIN/sign_update" "${SIGN_ARGS[@]}" "$DMG") || {
+# (不用数组传参:macOS 自带 bash 3.2 在 set -u 下展开空数组会报 unbound variable)
+if [ -n "${FOLDERIS_SPARKLE_KEY_FILE:-}" ]; then
+  SIGNATURE_ATTRS=$("$SPARKLE_BIN/sign_update" -f "$FOLDERIS_SPARKLE_KEY_FILE" "$DMG")
+else
+  SIGNATURE_ATTRS=$("$SPARKLE_BIN/sign_update" "$DMG")
+fi || {
   echo "EdDSA 签名失败。若还没生成密钥,先运行:"
   echo "  $SPARKLE_BIN/generate_keys"
   echo "并把私钥备份进密码管理器(丢失=存量用户永久失联)。"
