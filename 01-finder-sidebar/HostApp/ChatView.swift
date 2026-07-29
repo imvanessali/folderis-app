@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ChatView: View {
     @ObservedObject var chat: ChatViewModel
@@ -253,28 +254,26 @@ private struct HistoryListView: View {
                             .padding(.bottom, 4)
 
                             ForEach(chat.ccSessionList) { session in
-                                Button {
-                                    chat.importCCSession(session)
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "terminal")
+                                // 与 HistoryRow 相同的可点击行布局：行内文字保持可选中，
+                                // 点击空白处导入会话。
+                                HStack(spacing: 8) {
+                                    Image(systemName: "terminal")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(session.title)
+                                            .font(.system(size: 13))
+                                            .lineLimit(1)
+                                        Text(Self.dateFormatter.localizedString(for: session.updatedAt, relativeTo: Date()))
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(session.title)
-                                                .font(.system(size: 13))
-                                                .lineLimit(1)
-                                            Text(Self.dateFormatter.localizedString(for: session.updatedAt, relativeTo: Date()))
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        Spacer()
                                     }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .contentShape(Rectangle())
+                                    Spacer()
                                 }
-                                .buttonStyle(.plain)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                                .onTapGesture { chat.importCCSession(session) }
                                 Divider().padding(.leading, 12)
                             }
                         }
@@ -408,10 +407,7 @@ private struct MessageBubble: View {
                 Spacer(minLength: 40)
                 VStack(alignment: .trailing, spacing: 3) {
                     if let taskID = message.taskID {
-                        Text(taskID)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                        TaskIDChip(taskID: taskID)
                     }
                     bubbleText(message.text)
                 }
@@ -435,6 +431,44 @@ private struct MessageBubble: View {
                     }
                 }
             }
+        }
+    }
+
+    /// 任务编号 chip：点击复制编号到剪贴板，并短暂提示如何引用该任务。
+    private struct TaskIDChip: View {
+        let taskID: String
+        @State private var copied = false
+        @State private var hideTask: Task<Void, Never>?
+
+        var body: some View {
+            HStack(spacing: 5) {
+                if copied {
+                    Text(L("已复制 · 在任意对话输入该编号即可引用此任务",
+                           "Copied — type it in any chat to reference this task"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
+                Text(taskID)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(taskID, forType: .string)
+                withAnimation { copied = true }
+                hideTask?.cancel()
+                hideTask = Task {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    guard !Task.isCancelled else { return }
+                    withAnimation { copied = false }
+                }
+            }
+            .onHover { inside in
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .help(L("点击复制任务编号", "Click to copy the task ID"))
         }
     }
 
