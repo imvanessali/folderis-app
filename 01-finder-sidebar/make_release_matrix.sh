@@ -29,14 +29,32 @@ FULL_DMG="dist/Folderis-$DMG_SUFFIX.dmg"
 [ -f "$FULL_DMG" ] || { echo "缺少发布产物：$FULL_DMG"; exit 1; }
 hdiutil verify "$FULL_DMG" >/dev/null
 
-MANIFEST="dist/Folderis-macOS-$DMG_SUFFIX-SHA256.txt"
+# 未公证的测试构建不进 Release/：避免同名覆盖正式分发物。
+if [ "$SKIP_NOTARIZE" = "1" ]; then
+  echo
+  echo "SKIP_NOTARIZE=1：测试构建不发布到 Release/，产物保留在 $FULL_DMG"
+  exit 0
+fi
+
+# 最终分发物统一放仓库根 Release/<版本号>/；dist/ 只是构建暂存
+# （dist/Folderis.app 兼任下一次打包的 RUNTIME_SRC 来源，保留）。
+BUILD_VERSION=$(sed -n 's/^BUILD_VERSION="\(.*\)"/\1/p' make_release.sh)
+[ -n "$BUILD_VERSION" ] || { echo "无法从 make_release.sh 读取 BUILD_VERSION"; exit 1; }
+RELEASE_DIR="../Release/$BUILD_VERSION"
+mkdir -p "$RELEASE_DIR"
+cp "$FULL_DMG" "$RELEASE_DIR/"
+
+MANIFEST="$RELEASE_DIR/Folderis-macOS-$DMG_SUFFIX-SHA256.txt"
 (
-  cd dist
+  cd "$RELEASE_DIR"
   shasum -a 256 "$(basename "$FULL_DMG")"
 ) > "$MANIFEST"
 
+# 自动更新产物随发布件归档(同时保留在 dist/ 供 publish_release.sh 上传)
+[ -f "dist/appcast-$ARCH.xml" ] && cp "dist/appcast-$ARCH.xml" "$RELEASE_DIR/"
+
 echo
 echo "macOS release 完成："
-ls -lh "$FULL_DMG"
+ls -lh "$RELEASE_DIR/$(basename "$FULL_DMG")"
 echo "校验文件：$MANIFEST"
 cat "$MANIFEST"

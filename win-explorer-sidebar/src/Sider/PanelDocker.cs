@@ -13,6 +13,8 @@ namespace Sider;
 public sealed class PanelDocker
 {
     public double PanelWidth { get; set; } = 340;
+    /// <summary>收起态窄轨宽度（对齐 mac CollapsedRailView.width）。</summary>
+    public double CollapsedWidth { get; set; } = 56;
 
     private readonly Window _panel;
     private readonly ExplorerTracker _tracker;
@@ -31,30 +33,32 @@ public sealed class PanelDocker
         _timer.Tick += (_, _) => Tick();
     }
 
-    private OrbWindow? _orb;
-    private nint _orbHwnd;
     private bool _collapsed;
+
+    public bool IsCollapsed => _collapsed;
+
+    /// <summary>收起/展开时通知面板切换内部 UI（窄轨 ↔ 完整内容）。</summary>
+    public event Action<bool>? CollapsedChanged;
 
     public void Start()
     {
         _panelHwnd = new WindowInteropHelper(_panel).EnsureHandle();
         NativeMethods.MakeActivatable(_panelHwnd);
-        _orb = new OrbWindow();
-        _orb.ExpandRequested += Expand;
-        _orbHwnd = new WindowInteropHelper(_orb).EnsureHandle();
         _timer.Start();
     }
 
     public void Collapse()
     {
         _collapsed = true;
-        _panel.Hide();
+        CollapsedChanged?.Invoke(true);
+        Tick();   // 立即按窄宽度重贴，不等下一次轮询
     }
 
     public void Expand()
     {
         _collapsed = false;
-        _orb?.Hide();
+        CollapsedChanged?.Invoke(false);
+        Tick();
     }
 
     public void Stop() => _timer.Stop();
@@ -78,7 +82,6 @@ public sealed class PanelDocker
     private void HideAll()
     {
         _panel.Hide();
-        _orb?.Hide();
     }
 
     private void Tick()
@@ -122,7 +125,7 @@ public sealed class PanelDocker
         NativeMethods.GetWindowThreadProcessId(fg, out var fgPid);
         // 本进程窗口（面板、托盘菜单、设置弹窗）在前台时：只维持已显示的面板，
         // 不唤起隐藏的面板——否则点托盘退出时面板会凭空贴上来（对齐 mac 语义）。
-        bool ours = fgPid == Environment.ProcessId && (_panel.IsVisible || (_orb?.IsVisible ?? false));
+        bool ours = fgPid == Environment.ProcessId && _panel.IsVisible;
         if (fg != ctx.Hwnd && fgRoot != ctx.Hwnd && !ours)
         {
             Diag($"hide: fg={fg} fgRoot={fgRoot} target={ctx.Hwnd} fgPid={fgPid}");
@@ -142,23 +145,10 @@ public sealed class PanelDocker
         if (!NativeMethods.GetVisibleRect(ctx.Hwnd, out var r)) return;
         Diag($"dock: target={ctx.Hwnd} rect=({r.Left},{r.Top},{r.Right},{r.Bottom}) folder={ctx.FolderPath}");
 
+        // 收起态与展开态走同一条贴靠路径，只是宽度不同：
+        // 面板本体缩成窄轨（icon + ">"），仍贴在 Explorer 右缘。
         var dpi = VisualTreeHelper.GetDpi(_panel);
-        int widthPx = (int)(PanelWidth * dpi.DpiScaleX);
-
-        // 收起态：只显示悬浮球，贴窗口右上角（对齐 mac orb topClearance）
-        if (_collapsed)
-        {
-            _panel.Hide();
-            int orbPx = (int)(OrbWindow.Size * dpi.DpiScaleX);
-            int inset = (int)(12 * dpi.DpiScaleX);
-            int topClear = (int)(64 * dpi.DpiScaleY);
-            NativeMethods.SetWindowPos(_orbHwnd, NativeMethods.HWND_TOPMOST,
-                r.Right - orbPx - inset, r.Top + topClear, orbPx, orbPx,
-                NativeMethods.SWP_NOACTIVATE);
-            if (!(_orb?.IsVisible ?? false)) _orb?.Show();
-            return;
-        }
-        _orb?.Hide();
+        int widthPx = (int)((_collapsed ? CollapsedWidth : PanelWidth) * dpi.DpiScaleX);
 
         // 挤压布局（对齐 mac squeeze）：屏幕放不下面板时压窄 Explorer 而不是重叠。
         var work = NativeMethods.GetWorkArea(ctx.Hwnd);

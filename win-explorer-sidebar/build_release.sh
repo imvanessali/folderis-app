@@ -260,6 +260,25 @@ if [ -z "$SIGN_PFX" ]; then
   echo "   (FOLDERIS_SIGN_REQUIRE=1 makes signing mandatory)." >&2
 fi
 
-echo "Windows release artifacts are in $DIST (version $APP_VERSION, build $BUILD_VERSION)"
+# 最终分发物统一放仓库根 Release/<版本号>/（与 mac 共用 make_release.sh 里的
+# BUILD_VERSION，保证同一版本的两端产物落在同一目录）；dist/ 只是构建暂存。
+# 注意：这个目录名版本与本脚本自身的 BUILD_VERSION（App 设置页构建号）是两回事，
+# 用独立变量名避免覆盖。
+RELEASE_TAG=$(sed -n 's/^BUILD_VERSION="\(.*\)"/\1/p' ../01-finder-sidebar/make_release.sh)
+[ -n "$RELEASE_TAG" ] || { echo "无法从 ../01-finder-sidebar/make_release.sh 读取 BUILD_VERSION" >&2; exit 1; }
+RELEASE_DIR="../Release/$RELEASE_TAG"
+mkdir -p "$RELEASE_DIR"
+cp "$DIST/Folderis-Setup.exe" "$RELEASE_DIR/"
+(
+  cd "$RELEASE_DIR"
+  shasum -a 256 Folderis-Setup.exe
+) > "$RELEASE_DIR/Folderis-Windows-x64-SHA256.txt"
+# 自动更新产物随发布件一起归档（appcast 可能因缺密钥被跳过，存在才拷）
+if [ -f "$DIST/appcast.xml" ]; then
+  cp "$DIST/appcast.xml" "$RELEASE_DIR/"
+  [ -f "$DIST/appcast.xml.signature" ] && cp "$DIST/appcast.xml.signature" "$RELEASE_DIR/"
+fi
+
+echo "Windows release artifacts are in $RELEASE_DIR (version $APP_VERSION, build $BUILD_VERSION)"
 echo "  上传：$RELEASE_INSTALLER → $UPDATE_BASE_URL/win/Folderis-Setup-$APP_VERSION.exe"
 echo "        $DIST/appcast.xml(.signature) → $UPDATE_BASE_URL/win/appcast.xml(.signature)"

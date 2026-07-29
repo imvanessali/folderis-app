@@ -18,7 +18,7 @@ echo "签名身份：$IDENTITY"
 RUNTIME_SRC="${RUNTIME_SRC:?需要 RUNTIME_SRC=<含 pyrt/ helpers/ ffmpeg 的目录>}"
 ARCH="${ARCH:-arm64}"   # arm64 | x86_64
 APP_VERSION="1.1.0"
-BUILD_VERSION="20260727.2"
+BUILD_VERSION="20260727.4"
 NOTARY_SCRATCH=""
 HELPER_BUILD=""
 BG_BUILD=""
@@ -331,6 +331,7 @@ STAGE_MOUNT=""
 hdiutil convert "$RW" -format UDZO -o "$DMG" -ov >/dev/null
 rm -f "$RW"
 RW=""
+rm -rf dist/dmgroot
 codesign --force --timestamp -s "$IDENTITY" "$DMG"
 
 if [ "${SKIP_NOTARIZE:-0}" = "1" ]; then

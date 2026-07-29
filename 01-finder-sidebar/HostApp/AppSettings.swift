@@ -67,7 +67,7 @@ enum BackendKind: String, CaseIterable, Identifiable {
     /// rawValue 被持久化并用作 backendSessionIDs 的 key，界面显示用这个。
     var displayName: String {
         switch self {
-        case .builtinAPI: return L("使用 API Key（目前只支持 DeepSeek）", "Use API Key (DeepSeek only for now)")
+        case .builtinAPI: return L("使用 API Key（仅Deepseek）", "Use API Key (DeepSeek only)")
         case .claudeCode: return "Claude Code"
         case .codex: return "Codex"
         case .cursor: return "Cursor"
@@ -222,7 +222,7 @@ final class AppSettings: ObservableObject {
         }
         self.apiKey = KeychainHelper.load(account: savedProvider.rawValue) ?? ""
         let savedMode = UserDefaults.standard.string(forKey: "approvalMode") ?? ""
-        self.approvalMode = ApprovalMode(rawValue: savedMode) ?? .ask
+        self.approvalMode = ApprovalMode(rawValue: savedMode) ?? .safeAuto
         let savedBackend = UserDefaults.standard.string(forKey: "backend") ?? ""
         self.backend = BackendKind(rawValue: savedBackend) ?? .builtinAPI
         refreshCLIDetection()
