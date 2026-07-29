@@ -4,11 +4,22 @@ struct SidebarPanelView: View {
     @ObservedObject var chat: ChatViewModel
     @ObservedObject var finderContext: FinderContext
     @ObservedObject var tracker: FinderWindowTracker
+    @ObservedObject var updater = UpdaterManager.shared
     let onCollapse: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HeaderBar(chat: chat, onCollapse: onCollapse)
+
+            // 更新就绪的温和提示:AI 任务进行中不打扰,等空闲再出现。
+            if let readyVersion = updater.readyVersion, updater.showsBanner, !chat.isSending {
+                UpdateReadyBanner(
+                    version: readyVersion,
+                    onRestart: { updater.restartAndInstall() },
+                    onLater: { updater.snoozeBanner() }
+                )
+                Divider()
+            }
 
             if !tracker.accessibilityGranted {
                 PermissionHint(text: L("需要在 系统设置 → 隐私与安全性 → 辅助功能 中授权本 App，聊天面板才能贴靠并跟随 Finder 窗口。", "Grant access in System Settings → Privacy & Security → Accessibility so the panel can dock to Finder windows."))

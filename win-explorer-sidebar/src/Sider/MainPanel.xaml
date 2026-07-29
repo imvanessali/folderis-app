@@ -56,6 +56,23 @@
                         Click="OnDoneClick"/>
             </DockPanel>
 
+            <!-- 更新就绪横幅：温和提示，不抢焦点、不弹窗；AI 忙碌时挂起不显示 -->
+            <Border x:Name="UpdateBanner" DockPanel.Dock="Top" Visibility="Collapsed"
+                    Background="#EAF3FF" BorderBrush="#B9D7F7" BorderThickness="1"
+                    CornerRadius="6" Padding="10,7" Margin="0,0,0,6">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                                VerticalAlignment="Center" Margin="8,0,0,0">
+                        <Button x:Name="UpdateRestartButton" Height="26" Padding="10,0"
+                                Margin="0,0,6,0" Click="OnUpdateRestartClick"/>
+                        <Button x:Name="UpdateLaterButton" Height="26" Padding="10,0"
+                                Click="OnUpdateLaterClick"/>
+                    </StackPanel>
+                    <local:SelectableText x:Name="UpdateBannerText" FontSize="12"
+                                          TextWrapping="Wrap" VerticalAlignment="Center"/>
+                </DockPanel>
+            </Border>
+
             <local:SelectableText x:Name="ContextLabel" DockPanel.Dock="Top"
                                   Foreground="Gray" FontSize="11" Margin="0,0,0,4"
                                   TextWrapping="Wrap"/>

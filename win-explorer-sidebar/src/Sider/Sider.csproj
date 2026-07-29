@@ -13,11 +13,23 @@
     <AssemblyName>Folderis</AssemblyName>
     <RootNamespace>Sider</RootNamespace>
     <ApplicationIcon>Assets/app.ico</ApplicationIcon>
-    <Version>1.1.723.1</Version>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.723.1</FileVersion>
-    <InformationalVersion>1.1.723.1+20260723.1</InformationalVersion>
+    <!-- 版本单一来源：发版时由 build_release.sh 的 FOLDERIS_APP_VERSION 经
+         -p:Version 覆盖；AssemblyVersion/FileVersion 一律由它派生，自动更新
+         比对的就是这个版本号（NetSparkle 读 AssemblyVersion）。 -->
+    <Version>1.1.0</Version>
+    <!-- 构建号：发版时由 build_release.sh 的 FOLDERIS_BUILD_VERSION 经 -p:FolderisBuild 注入，
+         本地构建显示 dev。跟着 InformationalVersion 进程序集，设置页读的就是它，
+         不再有手改常量忘了改的过时构建号。 -->
+    <FolderisBuild Condition="'$(FolderisBuild)' == ''">dev</FolderisBuild>
+    <InformationalVersion>$(Version)+$(FolderisBuild)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Company>Folderis</Company>
+    <Product>Folderis</Product>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- 自动更新：只取核心包，不引入它自带的 WPF/WinForms 界面（横幅自研） -->
+    <PackageReference Include="NetSparkleUpdater.SparkleUpdater" Version="2.3.0" />
+  </ItemGroup>
   <ItemGroup>
     <Reference Include="UIAutomationClient" />
     <Reference Include="UIAutomationTypes" />

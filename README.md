@@ -36,6 +36,26 @@ RUNTIME_SRC=/path/to/release-runtime ARCH=arm64 ./make_release_matrix.sh
 
 脚本会依次构建两个版本，并分别完成 App 公证/装订、DMG 公证/装订和 Gatekeeper/映像校验。最终产物和 SHA-256 清单位于 `01-finder-sidebar/dist/`。仅测试构建流程、不提交 Apple 公证时，可增加 `SKIP_NOTARIZE=1`。
 
+## 自动更新（Sparkle）
+
+发布件内置 Sparkle 2：后台静默检查（24h 周期）+ 静默下载，就绪后面板出现温和横幅「新版本已就绪，重启生效」；点「稍后」收起横幅，更新在退出时自动安装（应用长期不退出时，下个检查周期会温和地再次提醒）。开发构建（`build_app.sh`/Xcode 直接跑）没有 feed 配置，更新器自动禁用。
+
+**一次性准备（发布机）：**
+
+1. 生成 EdDSA 密钥（私钥进钥匙串）：`01-finder-sidebar/.build/artifacts/sparkle/Sparkle/bin/generate_keys`
+   ⚠️ **私钥丢失 = 存量用户永远收不到更新**，务必把私钥（`generate_keys -x 备份文件` 导出）存进密码管理器。
+2. R2 侧：创建 bucket `folderis-updates` 并绑定自定义域（默认约定 `https://dl.folderis.app`，构建与上传都可用 `FOLDERIS_UPDATE_BASE_URL` 覆盖）；`npm i -g wrangler && wrangler login`。
+
+**每次发版：**
+
+```bash
+cd 01-finder-sidebar
+RUNTIME_SRC=… ARCH=arm64 ./make_release_matrix.sh   # 构建+公证，收尾自动生成 dist/appcast-arm64.xml
+cd .. && ./publish_release.sh mac                    # 先传 DMG（版本化文件名、长缓存），后传 appcast（no-cache）
+```
+
+appcast 是发布开关：包先就位，appcast 替换的瞬间才对用户生效。**回滚** = 检出旧版本重跑 `make_appcast.sh`（或直接用当时留档的 appcast）再 `publish_release.sh mac`，存量用户会更新回旧版。Windows 端的对应流程见 `win-explorer-sidebar/README.md`。
+
 ## 使用
 
 - 菜单栏有一个气泡图标：显示/隐藏面板、退出。

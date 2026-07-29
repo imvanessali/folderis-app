@@ -25,6 +25,14 @@ ShowUninstDetails nevershow
 !ifndef APP_ICON
   !error "APP_ICON is required"
 !endif
+; 版本由 build_release.sh 的 FOLDERIS_APP_VERSION 注入（与 csproj 的 -p:Version 同源）：
+; APP_VERSION 是展示版本（如 1.1.0），APP_VERSION_FULL 是补齐四段的资源版本（如 1.1.0.0）。
+!ifndef APP_VERSION
+  !error "APP_VERSION is required"
+!endif
+!ifndef APP_VERSION_FULL
+  !error "APP_VERSION_FULL is required"
+!endif
 
 Name "${APP_NAME}"
 OutFile "${OUTPUT_FILE}"
@@ -33,13 +41,13 @@ InstallDirRegKey HKCU "Software\Folderis\${APP_ID}" "InstallDir"
 Icon "${APP_ICON}"
 UninstallIcon "${APP_ICON}"
 
-VIProductVersion "1.1.723.1"
+VIProductVersion "${APP_VERSION_FULL}"
 VIAddVersionKey /LANG=1033 "ProductName" "${APP_NAME}"
 VIAddVersionKey /LANG=1033 "CompanyName" "Folderis"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright 2026 Folderis"
 VIAddVersionKey /LANG=1033 "FileDescription" "${APP_NAME} Setup"
-VIAddVersionKey /LANG=1033 "FileVersion" "1.1.723.1"
-VIAddVersionKey /LANG=1033 "ProductVersion" "1.1.723.1"
+VIAddVersionKey /LANG=1033 "FileVersion" "${APP_VERSION_FULL}"
+VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "${APP_ICON}"
@@ -59,7 +67,13 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "1.1.723.1"
 !insertmacro MUI_LANGUAGE "English"
 
 Function .onInit
+  ; /S 静默安装（自动更新走这条路）必须零 UI：跳过语言选择框。
+  ; 静默模式下 MUI 的欢迎/目录/进度/完成页本身就不显示，
+  ; 因此装完不会有“启动 Folderis”的完成页——重启由 NetSparkle 生成的
+  ; 批处理负责（RelaunchAfterUpdate=true），安装器不做重启。
+  IfSilent skip_langdll
   !insertmacro MUI_LANGDLL_DISPLAY
+  skip_langdll:
 FunctionEnd
 
 Section "Install" SEC_MAIN
@@ -91,7 +105,8 @@ Section "Install" SEC_MAIN
   DetailPrint "正在完成安装..."
 
   IfFileExists "$INSTDIR\${APP_EXE}" payload_ok
-    MessageBox MB_ICONSTOP|MB_OK "Folderis.exe is missing from the installer payload."
+    ; /SD IDOK：静默安装时不弹窗（否则会卡住无人值守的自动更新），直接失败退出
+    MessageBox MB_ICONSTOP|MB_OK "Folderis.exe is missing from the installer payload." /SD IDOK
     Abort
   payload_ok:
 
@@ -102,7 +117,7 @@ Section "Install" SEC_MAIN
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" \
     "DisplayIcon" "$INSTDIR\${APP_EXE}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" \
-    "DisplayVersion" "1.1.723.1"
+    "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" \
     "Publisher" "Folderis"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" \
