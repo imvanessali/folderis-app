@@ -363,16 +363,18 @@ private struct EmptyStateView: View {
 }
 
 private struct ChatBrandLogo: View {
+    @EnvironmentObject private var settings: AppSettings
     let size: CGFloat
 
     var body: some View {
         Group {
-            if let url = Bundle.main.url(forResource: "OrbLogoTransparent", withExtension: "png"),
-               let logo = NSImage(contentsOf: url) {
+            if let logo = BrandLogo.image(choice: settings.logoChoice, preferTransparent: true) {
                 Image(nsImage: logo)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
+                    // 自定义/Clippy 多为不透明方图，轻裁圆角；默认透明 orb 不受影响。
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous))
             } else {
                 Image(systemName: "sparkles")
                     .font(.system(size: size * 0.45, weight: .semibold))

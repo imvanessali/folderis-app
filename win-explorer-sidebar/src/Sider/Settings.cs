@@ -19,6 +19,7 @@ public sealed class Settings
     public string Backend { get; set; } = "BuiltinApi"; // BuiltinApi | ClaudeCode | Codex | Cursor
     public bool OnboardingDone { get; set; }
     public string ApprovalMode { get; set; } = "safeAuto"; // ask | safeAuto | yolo
+    public string LogoChoice { get; set; } = "orb"; // orb | clippy | custom
 
     private static string Dir => SkillRunner.SupportRoot;
     private static string ConfigPath => Path.Combine(Dir, "settings.json");
@@ -36,6 +37,7 @@ public sealed class Settings
                 {
                     s.Backend = json.Backend; s.OnboardingDone = json.OnboardingDone;
                     s.ApprovalMode = json.ApprovalMode;
+                    s.LogoChoice = string.IsNullOrEmpty(json.LogoChoice) ? "orb" : json.LogoChoice;
                 }
             }
             if (File.Exists(KeyPath) && OperatingSystem.IsWindows())
@@ -56,7 +58,7 @@ public sealed class Settings
     {
         Directory.CreateDirectory(Dir);
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(
-            new { BaseUrl, Model, Backend, OnboardingDone, ApprovalMode },
+            new { BaseUrl, Model, Backend, OnboardingDone, ApprovalMode, LogoChoice },
             new JsonSerializerOptions { WriteIndented = true }));
         if (OperatingSystem.IsWindows())
         {

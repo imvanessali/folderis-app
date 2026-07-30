@@ -40,7 +40,7 @@
         <Grid x:Name="CollapsedRail" Visibility="Collapsed" Background="Transparent"
               Cursor="Hand" MouseLeftButtonUp="OnExpandClick">
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
-                <Image Source="pack://application:,,,/Assets/app.png" Width="28" Height="28"
+                <Image x:Name="RailLogo" Source="pack://application:,,,/Assets/app.png" Width="28" Height="28"
                        Stretch="UniformToFill">
                     <Image.Clip>
                         <EllipseGeometry Center="14,14" RadiusX="14" RadiusY="14"/>

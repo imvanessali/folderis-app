@@ -37,6 +37,7 @@
     <EmbeddedResource Include="../../../01-finder-sidebar/skills/skills.py" LogicalName="skills.py" />
     <EmbeddedResource Include="../../../01-finder-sidebar/skills/catalog.txt" LogicalName="catalog.txt" />
     <Resource Include="Assets/app.png" />
+    <Resource Include="Assets/clippy.png" />
     <!-- WinForms 只用于托盘 NotifyIcon，全限定调用；去掉隐式 using 避免与 WPF 类型撞名 -->
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />

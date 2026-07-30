@@ -12,6 +12,7 @@
 		15C38A55E674568441DA7E87 /* FloatingPanelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 600647C795DA8CCFE77B1FB8 /* FloatingPanelController.swift */; };
 		1700A1A4E7D121846F9BAAFE /* FinderWindowTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6275502A448D14C51F59538A /* FinderWindowTracker.swift */; };
 		2CC76F54B843BE5801D421EF /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6ACCFE50FB273AF98BC977D /* AppSettings.swift */; };
+		A1B2C3D4E5F60718293A4B5C /* BrandLogo.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5D6E7F8091A2B3C4D5E6F70 /* BrandLogo.swift */; };
 		44213D83AA9056985B064DA2 /* FinderSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4F85353195065A050D218B6 /* FinderSync.swift */; };
 		511E363AFBF79E037E27AB8C /* FinderSidebarExt.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 4D082FF7E50D1580FC682738 /* FinderSidebarExt.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5DB95E2BD4C67EBAAF32C232 /* SidebarPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB048C05E4A305F99CD5F697 /* SidebarPanelView.swift */; };
@@ -77,6 +78,7 @@
 		AD01BC156B6BCFFD95D51925 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B0D346106E3351135BFBA811 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		B6ACCFE50FB273AF98BC977D /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		C5D6E7F8091A2B3C4D5E6F70 /* BrandLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandLogo.swift; sourceTree = "<group>"; };
 		B8829FC46377F71F415DD1C2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		BA29EFB989DCF19A06D7404F /* FinderSidebarHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FinderSidebarHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C1C46D8917615E3F9D7C4012 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
@@ -121,6 +123,7 @@
 			children = (
 				FF73DE9380722B306F092863 /* AppDelegate.swift */,
 				B6ACCFE50FB273AF98BC977D /* AppSettings.swift */,
+				C5D6E7F8091A2B3C4D5E6F70 /* BrandLogo.swift */,
 				8FFBFA01661DE912EE35BA7A /* ChatMessage.swift */,
 				BA5E00000000000000000012 /* L10n.swift */,
 				BA5E00000000000000000022 /* OnboardingView.swift */,
@@ -236,6 +239,7 @@
 				0BFE8E7D74E20556103B68C1 /* AppDelegate.swift in Sources */,
 				5BA9AC1E000000000000B005 /* UpdaterManager.swift in Sources */,
 				2CC76F54B843BE5801D421EF /* AppSettings.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5C /* BrandLogo.swift in Sources */,
 				EAFB3C700E5011667222744B /* ChatMessage.swift in Sources */,
 				BA5E00000000000000000011 /* L10n.swift in Sources */,
 				BA5E00000000000000000021 /* OnboardingView.swift in Sources */,

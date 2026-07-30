@@ -203,6 +203,7 @@ cp 使用手册.md "User Guide.md" "$APP/Contents/Resources/"
 cp branding/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp branding/OrbLogo.png "$APP/Contents/Resources/OrbLogo.png"
 cp branding/OrbLogoTransparent.png "$APP/Contents/Resources/OrbLogoTransparent.png"
+cp branding/ClippyLogo.png "$APP/Contents/Resources/ClippyLogo.png"
 if [ -d "$APP/Contents/PlugIns/FinderSidebarExt.appex" ]; then
   mkdir -p "$APP/Contents/PlugIns/FinderSidebarExt.appex/Contents/Resources"
   cp branding/OrbLogo.png "$APP/Contents/PlugIns/FinderSidebarExt.appex/Contents/Resources/ToolbarIcon.png"

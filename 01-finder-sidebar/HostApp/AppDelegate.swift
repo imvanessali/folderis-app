@@ -299,11 +299,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: L("退出", "Quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
         statusItem = item
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(refreshStatusImage),
+            name: BrandLogo.changedNotification, object: nil
+        )
+    }
+
+    @objc private func refreshStatusImage() {
+        statusItem?.button?.image = Self.brandStatusImage()
     }
 
     private static func brandStatusImage() -> NSImage {
-        let image = Bundle.main.url(forResource: "OrbLogo", withExtension: "png")
-            .flatMap(NSImage.init(contentsOf:))
+        let image = BrandLogo.image(choice: BrandLogo.savedChoice)
             ?? NSImage(named: "AppIcon")
             ?? NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Folderis")
             ?? NSImage()

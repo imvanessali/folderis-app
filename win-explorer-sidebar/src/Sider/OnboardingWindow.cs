@@ -106,11 +106,13 @@ public sealed class OnboardingWindow : Window
         var panel = PageStack();
         panel.Children.Add(new Image
         {
-            Source = new BitmapImage(new Uri("pack://application:,,,/Assets/app.png")),
+            Source = BrandAssets.Logo(_settings.LogoChoice),
             Width = 170,
             Height = 170,
             Stretch = Stretch.Uniform,
-            Margin = new Thickness(0, 18, 0, 6)
+            Margin = new Thickness(0, 18, 0, 6),
+            // 自定义/Clippy 多为不透明方图，轻裁圆角；默认透明 logo 不受影响。
+            Clip = new RectangleGeometry(new Rect(0, 0, 170, 170), 30, 30)
         });
         panel.Children.Add(Text(L10n.T($"欢迎使用 {ProductInfo.Name}", $"Welcome to {ProductInfo.Name}"), 26, FontWeights.Bold));
         var lead = Text(L10n.T(
