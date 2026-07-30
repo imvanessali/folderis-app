@@ -63,6 +63,10 @@ class Rect:
     def bottom(self) -> int:
         return self.y + self.height
 
+    @property
+    def area(self) -> int:
+        return self.width * self.height
+
 
 def union_rects(rects: Iterable[Rect], margin: int = 8) -> Rect:
     values = list(rects)
@@ -81,6 +85,10 @@ def union_rects(rects: Iterable[Rect], margin: int = 8) -> Rect:
 
 
 def parse_window_rects(output: str) -> list[Rect]:
+    return [rect for _, rect in parse_named_window_rects(output)]
+
+
+def parse_named_window_rects(output: str) -> list[tuple[str, Rect]]:
     rects = []
     for line in output.splitlines():
         if not line.strip():
@@ -90,8 +98,32 @@ def parse_window_rects(output: str) -> list[Rect]:
             continue
         x, y, width, height = map(int, fields[1:])
         if width > 0 and height > 0:
-            rects.append(Rect(x, y, width, height))
+            rects.append((fields[0], Rect(x, y, width, height)))
     return rects
+
+
+def recording_crop_from_windows(windows: list[tuple[str, Rect]]) -> Rect:
+    """Require one docked Finder/panel pair whose bounding box has no gap."""
+    finder = [rect for name, rect in windows if name == "Finder"]
+    folderis = [rect for name, rect in windows if name == "Folderis"]
+    if len(finder) != 1 or len(folderis) != 1:
+        raise ValueError(
+            "Recording needs exactly one visible Finder window and exactly one visible "
+            f"Folderis panel (found Finder={len(finder)}, Folderis={len(folderis)}). "
+            "Close Finder extras and Folderis Settings/Onboarding windows, then retry."
+        )
+    first, second = finder[0], folderis[0]
+    bounding = union_rects([first, second], margin=0)
+    overlap_width = max(0, min(first.right, second.right) - max(first.x, second.x))
+    overlap_height = max(0, min(first.bottom, second.bottom) - max(first.y, second.y))
+    union_area = first.area + second.area - overlap_width * overlap_height
+    if union_area != bounding.area:
+        raise ValueError(
+            "Finder and the Folderis panel do not form one gap-free rectangle. Dock the "
+            "panel flush against Finder with matching top and bottom edges; recording "
+            "will not start while any desktop gap could be captured."
+        )
+    return bounding
 
 
 def recorder_command(output: Path, rect: Rect) -> list[str]:

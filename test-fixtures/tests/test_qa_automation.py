@@ -18,10 +18,13 @@ from qa_support import (
     Rect,
     cancellation_probe,
     load_dispatch_cases,
+    parse_named_window_rects,
     parse_window_rects,
+    recording_crop_from_windows,
     recorder_command,
     union_rects,
 )
+from qa_structural_cases import structural_cases
 
 
 def load_module(name, path):
@@ -49,17 +52,43 @@ class SharedDispatchCaseTests(unittest.TestCase):
 
 
 class RecorderTests(unittest.TestCase):
-    def test_crop_is_union_of_only_finder_and_folderis_windows(self):
-        rects = parse_window_rects(
+    def test_crop_is_gap_free_union_of_exact_docked_pair(self):
+        windows = parse_named_window_rects(
             "Finder\t100\t50\t900\t700\n"
             "Folderis\t40\t50\t60\t700\n"
-            "Safari\t0\t0\t2000\t1200\n"
         )
-        crop = union_rects(rects, margin=8)
-        self.assertEqual(crop, Rect(32, 42, 976, 716))
+        crop = recording_crop_from_windows(windows)
+        self.assertEqual(crop, Rect(40, 50, 960, 700))
         command = recorder_command(Path("/tmp/evidence.mp4"), crop)
-        self.assertEqual(command[1:3], ["-v", "-R32,42,976,716"])
-        self.assertNotIn("Safari", " ".join(command))
+        self.assertEqual(command[1:3], ["-v", "-R40,50,960,700"])
+
+    def test_separated_windows_fail_before_recording(self):
+        windows = parse_named_window_rects(
+            "Finder\t200\t50\t900\t700\n"
+            "Folderis\t40\t50\t100\t700\n"
+        )
+        with self.assertRaisesRegex(ValueError, "gap-free rectangle"):
+            recording_crop_from_windows(windows)
+
+    def test_extra_finder_or_folderis_window_fails_before_recording(self):
+        for output in (
+            "Finder\t100\t50\t900\t700\nFinder\t120\t80\t400\t300\nFolderis\t40\t50\t60\t700\n",
+            "Finder\t100\t50\t900\t700\nFolderis\t40\t50\t60\t700\nFolderis\t50\t80\t500\t400\n",
+        ):
+            with self.subTest(output=output):
+                with self.assertRaisesRegex(ValueError, "exactly one visible"):
+                    recording_crop_from_windows(parse_named_window_rects(output))
+
+
+class StructuralValidationTests(unittest.TestCase):
+    def test_established_round_has_47_genuine_stable_workflows(self):
+        cases = structural_cases()
+        self.assertEqual(len(cases), 47)
+        self.assertEqual([case["id"] for case in cases], [f"W-{index:02d}" for index in range(1, 48)])
+        self.assertTrue(all(case["args"] and case["parameters"] for case in cases))
+        validator = (FIXTURES / "qa_semantic_validators.py").read_text(encoding="utf-8")
+        for case in cases:
+            self.assertIn(f'id_ == "{case["id"]}"', validator)
 
 
 class CancellationTests(unittest.TestCase):
@@ -90,6 +119,9 @@ class VersionBumpTests(unittest.TestCase):
         "01-finder-sidebar/FinderSidebar.xcodeproj/project.pbxproj",
         "win-explorer-sidebar/src/Sider/Sider.csproj",
         "win-explorer-sidebar/src/Setup/Setup.csproj",
+        "win-explorer-sidebar/build_release.sh",
+        "01-finder-sidebar/make_release_matrix.sh",
+        "announce/public/announce.json",
     ]
 
     def setUp(self):
@@ -138,6 +170,39 @@ class VersionBumpTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 self.bump.atomic_write(changes)
         self.assertEqual(before, {path: path.read_bytes() for path in changes})
+
+    def test_cli_dry_run_and_check_do_not_write(self):
+        command = [
+            sys.executable,
+            str(ROOT / "scripts" / "bump_version.py"),
+            "1.2.3",
+            "20260731.4",
+            "--dry-run",
+            "--root",
+            str(self.root),
+        ]
+        before = {path: (self.root / path).read_bytes() for path in self.FILES}
+        dry_run = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+        self.assertIn("Dry run:", dry_run.stdout)
+        self.assertEqual(before, {path: (self.root / path).read_bytes() for path in self.FILES})
+        self.assertEqual(
+            (self.root / "announce/public/announce.json").read_bytes(),
+            before["announce/public/announce.json"],
+        )
+
+        check = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "bump_version.py"),
+                "--check",
+                "--root",
+                str(self.root),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(check.returncode, 0, check.stderr)
 
 
 if __name__ == "__main__":

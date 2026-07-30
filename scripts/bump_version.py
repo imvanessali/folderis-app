@@ -100,6 +100,24 @@ def render(root: Path, app_version: str, build_version: str) -> dict[Path, str]:
     )
     targets[path] = text
 
+    # These release scripts consume the synchronized sources instead of
+    # carrying another literal. Keeping them in the checked target set makes
+    # --check fail if a later edit silently reintroduces a divergent default.
+    path, text = read("win-explorer-sidebar/build_release.sh")
+    for marker in (
+        'json.load(open("../version.json"))["app_version"]',
+        'json.load(open("../version.json"))["build_version"]',
+    ):
+        if text.count(marker) != 1:
+            raise VersionError(f"{path}: missing single-source marker {marker!r}")
+    targets[path] = text
+
+    path, text = read("01-finder-sidebar/make_release_matrix.sh")
+    marker = "BUILD_VERSION=$(sed -n 's/^BUILD_VERSION="
+    if text.count(marker) != 1:
+        raise VersionError(f"{path}: release matrix no longer reads make_release.sh BUILD_VERSION")
+    targets[path] = text
+
     manifest = root / "version.json"
     targets[manifest] = json.dumps(
         {"app_version": app_version, "build_version": build_version},

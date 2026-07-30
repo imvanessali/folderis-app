@@ -22,14 +22,17 @@ from qa_support import (
     MARKER,
     cancellation_probe,
     load_dispatch_cases,
+    parse_named_window_rects,
     parse_dispatch_payload,
-    parse_window_rects,
+    recording_crop_from_windows,
     recorder_command,
     sha256,
     snapshot_files,
     terminate_process_group,
     union_rects,
 )
+from qa_semantic_validators import validate_structural_case
+from qa_structural_cases import structural_cases
 
 
 HERE = Path(__file__).resolve().parent
@@ -42,17 +45,19 @@ tell application "System Events"
   set rows to {}
   if exists process "Finder" then
     tell process "Finder"
-      if exists window 1 then
-        set p to position of window 1
-        set s to size of window 1
-        set end of rows to "Finder" & tab & (item 1 of p) & tab & (item 2 of p) & tab & (item 1 of s) & tab & (item 2 of s)
-      end if
+      repeat with w in windows
+        if not (value of attribute "AXMinimized" of w) then
+          set p to position of w
+          set s to size of w
+          set end of rows to "Finder" & tab & (item 1 of p) & tab & (item 2 of p) & tab & (item 1 of s) & tab & (item 2 of s)
+        end if
+      end repeat
     end tell
   end if
   if exists process "Folderis" then
     tell process "Folderis"
       repeat with w in windows
-        if value of attribute "AXVisible" of w then
+        if not (value of attribute "AXMinimized" of w) then
           set p to position of w
           set s to size of w
           set end of rows to "Folderis" & tab & (item 1 of p) & tab & (item 2 of p) & tab & (item 1 of s) & tab & (item 2 of s)
@@ -113,24 +118,15 @@ class ScreenRecorder:
                 "Unable to read Finder/Folderis window bounds. Grant Accessibility "
                 f"permission to the terminal running QA. Detail: {bounds.stderr.strip()}"
             )
-        labels = {line.split("\t", 1)[0] for line in bounds.stdout.splitlines()}
-        if not {"Finder", "Folderis"} <= labels:
-            missing = ", ".join(sorted({"Finder", "Folderis"} - labels))
-            raise QAError(
-                f"No visible window was found for: {missing}. Open Finder and Folderis "
-                "before --record-screen; QA will not widen the crop to unrelated desktop areas."
-            )
-        rects = parse_window_rects(bounds.stdout)
-        if not rects:
-            raise QAError(
-                "No visible Finder + Folderis windows were found. Open both apps before "
-                "using --record-screen; recording will never include unrelated desktop areas."
-            )
+        try:
+            crop = recording_crop_from_windows(parse_named_window_rects(bounds.stdout))
+        except ValueError as exc:
+            raise QAError(str(exc)) from exc
         self.output.parent.mkdir(parents=True, exist_ok=True)
         if self.output.exists():
             self.output.unlink()
         self.capture_output.unlink(missing_ok=True)
-        self.command = recorder_command(self.capture_output, union_rects(rects))
+        self.command = recorder_command(self.capture_output, crop)
         self.process = subprocess.Popen(
             self.command,
             stdout=subprocess.PIPE,
@@ -206,7 +202,14 @@ def resolve_runtime(args: argparse.Namespace) -> tuple[Path, Path, dict[str, str
             "FS_FFPROBE": str(runtime / "bin" / "ffprobe"),
         }
     else:
-        python = args.python or Path(sys.executable)
+        packaged_pythons = [
+            Path.home() / "Library" / "Application Support" / "FinderSidebar" / "python" / "bin" / "python3",
+            Path("/Applications/Folderis.app/Contents/Resources/runtime/python/bin/python3.12"),
+        ]
+        python = args.python or next(
+            (candidate for candidate in packaged_pythons if candidate.is_file()),
+            Path(sys.executable),
+        )
         skills = args.skills or SOURCE_SKILLS
         support = Path.home() / "Library" / "Application Support" / "FinderSidebar" / "bin"
         env = {
@@ -266,6 +269,7 @@ def main() -> int:
     work = args.work_dir.resolve()
     baseline = snapshot_files(work)
     results: list[dict] = []
+    structural_results: list[dict] = []
     payloads: dict[str, dict] = {}
     ffmpeg = Path(env_extra["FS_FFMPEG"])
     ffprobe = Path(env_extra["FS_FFPROBE"])
@@ -442,6 +446,78 @@ def main() -> int:
             "digests": digests,
         })
 
+        # Execute the established 47-case real-fixture round. Each row runs one
+        # built-in skill workflow and receives a command-specific semantic
+        # validator; there are no padding/aggregate PASS rows.
+        for case in structural_cases():
+            cwd = work / case["cwd"]
+            selected_paths = [(cwd / item).resolve() for item in case["inputs"]]
+            selected_inputs = [str(path) for path in selected_paths]
+            input_hashes = {
+                str(path): sha256(path)
+                for path in selected_paths
+                if path.is_file()
+            }
+            before = snapshot_files(work)
+            started = time.time()
+            completed = run_command(python, skills, cwd, case["args"], env_extra)
+            after = snapshot_files(work)
+            outputs = [
+                work / relative
+                for relative in sorted(set(after) - set(before))
+            ]
+            inputs_preserved = all(
+                path.is_file() and sha256(path) == digest
+                for name, digest in input_hashes.items()
+                for path in [Path(name)]
+            )
+            failure = None
+            evidence = {}
+            if completed.returncode != 0:
+                failure = (
+                    f"skill exited {completed.returncode}: "
+                    f"{((completed.stderr or '') + (completed.stdout or ''))[-800:].strip()}"
+                )
+            else:
+                try:
+                    evidence = validate_structural_case(
+                        case,
+                        work=work,
+                        cwd=cwd,
+                        inputs=selected_paths,
+                        outputs=outputs,
+                        stdout=(completed.stdout or "") + (completed.stderr or ""),
+                        ffprobe=ffprobe,
+                        run_skill=lambda skill_cwd, skill_args: run_command(
+                            python, skills, skill_cwd, skill_args, env_extra
+                        ),
+                    )
+                    if not inputs_preserved:
+                        failure = "one or more selected input files changed"
+                except Exception as exc:
+                    failure = f"semantic validation failed: {exc}"
+            status = "PASS" if failure is None else "FAIL"
+            structural_results.append({
+                "id": case["id"],
+                "label": case["label"],
+                "status": status,
+                "skill": case["args"][0],
+                "selected_inputs": selected_inputs,
+                "actual_outputs": [str(path) for path in outputs],
+                "parameters": case["parameters"],
+                "inputs_preserved": inputs_preserved,
+                "ai_bypassed": True,
+                "elapsed": round(time.time() - started, 2),
+                "evidence": evidence,
+                "failure": failure,
+            })
+            print(f"[{status}] {case['id']} {case['label']}")
+
+        if len(structural_results) != 47:
+            raise QAError(
+                f"Structural QA definition error: executed {len(structural_results)} rows, expected 47"
+            )
+
         if not args.skip_cancellation:
             cancel_command = [
                 str(python), str(skills), "local-dispatch", "--request", "压缩这个视频",
@@ -479,14 +555,31 @@ def main() -> int:
         "canonical_fixtures": str(HERE),
         "fixture_reset": True,
         "skills_sha256": sha256(skills),
+        "python_executable": str(python),
         "screen_recording": str(args.recording_output) if recorder else None,
         "results": results,
+        "structural_validations": structural_results,
+        "structural_summary": {
+            "required_executed": 47,
+            "executed": len(structural_results),
+            "passed": sum(item["status"] == "PASS" for item in structural_results),
+            "failed": sum(item["status"] == "FAIL" for item in structural_results),
+            "skipped": sum(item["status"] == "SKIP" for item in structural_results),
+        },
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    failed = [item["id"] for item in results if item["status"] != "PASS"]
+    failed = [item["id"] for item in [*results, *structural_results] if item["status"] != "PASS"]
     print(f"Report: {args.report}")
-    print(f"PASS {len(results) - len(failed)} / FAIL {len(failed)} / TOTAL {len(results)}")
+    print(
+        "Structural validations: "
+        f"PASS {report['structural_summary']['passed']} / "
+        f"FAIL {report['structural_summary']['failed']} / "
+        f"SKIP {report['structural_summary']['skipped']} / "
+        f"EXECUTED {report['structural_summary']['executed']}"
+    )
+    total = len(results) + len(structural_results)
+    print(f"All rows: PASS {total - len(failed)} / FAIL {len(failed)} / TOTAL {total}")
     if failed:
         print("Failed: " + ", ".join(failed))
         return 1
