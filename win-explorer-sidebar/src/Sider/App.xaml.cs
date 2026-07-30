@@ -1,13 +1,30 @@
 using System.IO;
+using System.Reflection;
 using System.Windows;
 
 namespace Sider;
 
 internal static class ProductInfo
 {
-    public const string Version = "1.1.729.2";
-    public const string Build = "20260729.2";
+    /// <summary>
+    /// 版本单一来源：csproj 的 Version（发版时由 build_release.sh 的
+    /// FOLDERIS_APP_VERSION 经 -p:Version 注入），运行时直接读程序集，
+    /// 与自动更新比对的版本号（NetSparkle 读 AssemblyVersion）是同一个。
+    /// </summary>
+    public static readonly string Version =
+        typeof(ProductInfo).Assembly.GetName().Version?.ToString() ?? "0.0.0.0";
+    /// <summary>构建号：由 csproj 的 FolderisBuild 写进 InformationalVersion（Version+构建号）。</summary>
+    public static readonly string Build = ReadBuild();
     public const string Name = "Folderis";
+
+    private static string ReadBuild()
+    {
+        var info = typeof(ProductInfo).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
+        var plus = info.IndexOf('+');
+        return plus >= 0 && plus + 1 < info.Length ? info[(plus + 1)..] : "dev";
+    }
+
     public const string Edition = "Full";
     public const string MutexName = "Folderis.Sider.Full.Single";
 }
