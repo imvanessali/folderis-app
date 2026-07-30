@@ -10,15 +10,17 @@ INSTALLER_MODE="${INSTALLER_MODE:-auto}"
 # 应用版本单一来源：这里的 FOLDERIS_APP_VERSION 同时喂给
 # csproj（-p:Version → AssemblyVersion，版本公告比对的就是它）
 # 和 makensis（-DAPP_VERSION → 安装器资源版本与卸载项 DisplayVersion）。
+DEFAULT_APP_VERSION=$(python3 -c 'import json; print(json.load(open("../version.json"))["app_version"])')
+DEFAULT_BUILD_VERSION=$(python3 -c 'import json; print(json.load(open("../version.json"))["build_version"])')
 if [ -z "${FOLDERIS_APP_VERSION:-}" ]; then
   echo "" >&2
-  echo "⚠️  FOLDERIS_APP_VERSION 未设置，使用默认值 1.1.0。" >&2
+  echo "⚠️  FOLDERIS_APP_VERSION 未设置，使用 version.json 默认值 $DEFAULT_APP_VERSION。" >&2
   echo "   若线上已经是这个版本，版本公告会判定「无更新」，发出去等于没发。" >&2
   echo "   正式发布请显式指定版本号。" >&2
 fi
-APP_VERSION="${FOLDERIS_APP_VERSION:-1.1.0}"
-# 构建号（设置页显示用，不参与更新比对）：默认按日期生成，永远不会是过时的写死值。
-BUILD_VERSION="${FOLDERIS_BUILD_VERSION:-$(date +%Y%m%d).1}"
+APP_VERSION="${FOLDERIS_APP_VERSION:-$DEFAULT_APP_VERSION}"
+# 版本命令同步的根 manifest 是两端默认值；环境变量仍可用于一次性候选构建。
+BUILD_VERSION="${FOLDERIS_BUILD_VERSION:-$DEFAULT_BUILD_VERSION}"
 [[ "$APP_VERSION" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || {
   echo "FOLDERIS_APP_VERSION must look like 1.2 / 1.2.3 / 1.2.3.4: $APP_VERSION" >&2; exit 1; }
 # VIProductVersion 必须是四段，补齐 .0

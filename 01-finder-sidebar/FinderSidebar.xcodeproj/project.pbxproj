@@ -276,8 +276,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				CURRENT_PROJECT_VERSION = 20260716;
-				MARKETING_VERSION = 1.1;
+				CURRENT_PROJECT_VERSION = 20260729.2;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.findersidebar.host;
 				PRODUCT_NAME = Folderis;
 				SDKROOT = macosx;
@@ -298,8 +298,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				CURRENT_PROJECT_VERSION = 20260716;
-				MARKETING_VERSION = 1.1;
+				CURRENT_PROJECT_VERSION = 20260729.2;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.findersidebar.host;
 				PRODUCT_NAME = Folderis;
 				SDKROOT = macosx;
