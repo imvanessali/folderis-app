@@ -153,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         installEditMenu()
-        UpdaterManager.shared.start()
+        AnnouncementManager.shared.start()
         setupStatusItem()
 
         if Onboarding.needed {
@@ -262,10 +262,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         chat.clearConversation()
     }
 
-    @objc private func checkForUpdates() {
-        UpdaterManager.shared.checkForUpdatesManually()
-    }
-
     @objc private func openUserGuide() {
         let name = L10n.isChinese ? "使用手册" : "User Guide"
         guard let url = Bundle.main.url(forResource: name, withExtension: "md") else { return }
@@ -290,11 +286,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: L("使用手册", "User Guide"), action: #selector(openUserGuide), keyEquivalent: "").also {
             $0.target = self
         })
-        if UpdaterManager.shared.isEnabled {
-            menu.addItem(NSMenuItem(title: L("检查更新…", "Check for Updates…"), action: #selector(checkForUpdates), keyEquivalent: "").also {
-                $0.target = self
-            })
-        }
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: L("退出", "Quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu

@@ -67,10 +67,8 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 !insertmacro MUI_LANGUAGE "English"
 
 Function .onInit
-  ; /S 静默安装（自动更新走这条路）必须零 UI：跳过语言选择框。
-  ; 静默模式下 MUI 的欢迎/目录/进度/完成页本身就不显示，
-  ; 因此装完不会有“启动 Folderis”的完成页——重启由 NetSparkle 生成的
-  ; 批处理负责（RelaunchAfterUpdate=true），安装器不做重启。
+  ; /S 静默安装必须零 UI：跳过语言选择框。
+  ; 静默模式下 MUI 的欢迎/目录/进度/完成页本身就不显示。
   IfSilent skip_langdll
   !insertmacro MUI_LANGDLL_DISPLAY
   skip_langdll:

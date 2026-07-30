@@ -49,3 +49,6 @@ win-explorer-sidebar/src/Setup/payload.zip
 *.log
 *.tmp
 *.partial
+
+# Wrangler local state (announce worker)
+.wrangler/

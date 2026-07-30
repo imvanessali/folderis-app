@@ -51,7 +51,6 @@ MANIFEST="$RELEASE_DIR/Folderis-macOS-$DMG_SUFFIX-SHA256.txt"
 ) > "$MANIFEST"
 
 # 自动更新产物随发布件归档(同时保留在 dist/ 供 publish_release.sh 上传)
-[ -f "dist/appcast-$ARCH.xml" ] && cp "dist/appcast-$ARCH.xml" "$RELEASE_DIR/"
 
 echo
 echo "macOS release 完成："

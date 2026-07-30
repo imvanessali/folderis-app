@@ -4,19 +4,19 @@ struct SidebarPanelView: View {
     @ObservedObject var chat: ChatViewModel
     @ObservedObject var finderContext: FinderContext
     @ObservedObject var tracker: FinderWindowTracker
-    @ObservedObject var updater = UpdaterManager.shared
+    @ObservedObject var announce = AnnouncementManager.shared
     let onCollapse: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HeaderBar(chat: chat, onCollapse: onCollapse)
 
-            // 更新就绪的温和提示:AI 任务进行中不打扰,等空闲再出现。
-            if let readyVersion = updater.readyVersion, updater.showsBanner, !chat.isSending {
-                UpdateReadyBanner(
-                    version: readyVersion,
-                    onRestart: { updater.restartAndInstall() },
-                    onLater: { updater.snoozeBanner() }
+            // 版本公告的温和提示:AI 任务进行中不打扰,等空闲再出现。
+            if let notice = announce.notice, !chat.isSending {
+                AnnouncementBanner(
+                    notice: notice,
+                    onDownload: { announce.openDownloadPage() },
+                    onLater: { announce.dismiss() }
                 )
                 Divider()
             }

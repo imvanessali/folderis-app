@@ -58,150 +58,40 @@ export FOLDERIS_SIGN_REQUIRE=1                      # 正式发布：缺证书�
 `FOLDERIS_SIGN_TIMESTAMP_URL` 覆盖。未设置证书时脚本会构建成功但在结尾输出
 显著的未签名警告。
 
-## 自动更新（NetSparkleUpdater）
+## 版本公告（更新提示）
 
-> 状态：代码、发版脚本、签名密钥均已就位，**待 Windows 真机冒烟**（静默下载、
-> `/S` 安装、装完自动重启这三步在 macOS 上无法验证）——清单见下面第 6 节。
+> 产品决策(2026-07-30):砍掉 NetSparkleUpdater 静默下载安装方案,
+> 改用与 macOS 端同一条轻量公告通道。原因:静默安装链路需要 R2/域名/
+> 签名密钥/真机冒烟一整套基建,而公告横幅零基建、发布者完全可控。
 
-机制（与 macOS 端 Sparkle 2 同一套约定）：
+机制(与 macOS 端 `AnnouncementManager` 同一套约定与 JSON 格式):
 
-| 环节 | 实现 |
-|---|---|
-| feed | `https://dl.folderis.app/win/appcast.xml`（`FOLDERIS_APPCAST_URL` 可覆盖） |
-| 签名 | Ed25519，`SecurityMode.Strict`；appcast 与安装器都必须验签通过 |
-| 检查 | 启动后 20 秒开始，之后每 24 小时一次，全程静默 |
-| 下载 | 发现新版立即后台下载，用户无感 |
-| 提示 | 下载就绪后面板顶部出温和横幅「新版本 X 已就绪，重启生效」，中英双语；**AI 正在回复/跑工具循环时挂起不显示**，空闲后再出现；「稍后」收起本次运行的横幅，下次启动仍会提示 |
-| 安装 | 用户点「立即重启」才装：`Folderis-Setup-<版本>.exe /S`（NSIS 静默，零 UI） |
-| 重启 | 由 NetSparkle 生成的批处理负责（`RelaunchAfterUpdate=true`），安装器不做重启 |
+- 启动 20 秒后(此后每 24h)拉取
+  `https://folderis-announce.folderis.workers.dev/announce.json`
+  (`FOLDERIS_ANNOUNCE_URL` 环境变量可覆盖,测试用);
+- `win.version` 比装机构建号(`ProductInfo.Build`,如 20260727.4;本地 dev 构建按 0 处理)新 → 面板顶部横幅
+  「新版本 X 已发布 → 前往下载」,点击用默认浏览器打开 `win.url`;
+- 「稍后」把版本号记进 `%LOCALAPPDATA%\Sider\announce.dismissed`,
+  该版本内(含重启)不再提醒,下发更新的版本号后重新亮起;
+- 不下载、不安装、无签名验签;AI 回复期间横幅自动挂起,空闲再出现;
+- 断网/JSON 坏了/公告撤回:静默,不打扰用户;日志落
+  `%LOCALAPPDATA%\Sider\announce.log`。
 
-绝不弹模态对话框：NetSparkle 的界面包（`NetSparkleUpdater.UI.*`）没有引入，
-`UIFactory` 为 `null`，所有提示都走自研横幅。更新日志落
-`%LOCALAPPDATA%\Sider\update.log`。
+实现:`src/Sider/AnnouncementService.cs` + `MainPanel` 顶部横幅。
+下发/撤回公告的操作见仓库根 README「版本公告」一节(`publish_notice.sh`)。
 
-### 1. 生成并备份密钥（只做一次）
-
-> **已完成（2026-07-30，本机 `~/.folderis-release/netsparkle`，权限 700/600）。**
-> ⚠️ **`NetSparkle_Ed25519.priv` 还没有离线备份 —— 这是当前唯一一份。**
-> 私钥丢失后，已装机的老版本再也收不到能通过验签的更新，只能引导用户手动重装。
-> 请尽快备份到 1Password / 加密 U 盘。私钥永远不进仓库。
-> 换发布机时把整个目录搬过去，或用 `FOLDERIS_NETSPARKLE_KEYS` 指到别处。
+### 本地测试(伪造公告)
 
 ```bash
-dotnet tool install -g NetSparkleUpdater.Tools.AppCastGenerator --version 2.5.0
-export FOLDERIS_NETSPARKLE_KEYS="$HOME/.folderis-release/netsparkle"   # 默认值
-netsparkle-generate-appcast --generate-keys --key-path "$FOLDERIS_NETSPARKLE_KEYS"
-netsparkle-generate-appcast --export --key-path "$FOLDERIS_NETSPARKLE_KEYS"  # 打印公钥
+cd /tmp && mkdir -p fake && cat > fake/announce.json <<'JSON'
+{ "win": { "version": "99999999.9", "url": "https://example.com" } }
+JSON
+python3 -m http.server 8900 --directory fake &
+FOLDERIS_ANNOUNCE_URL=http://localhost:8900/announce.json Folderis.exe
 ```
 
-### 2. 把公钥内置进应用
-
-> **已完成**：`src/Sider/UpdaterService.cs` 里的 `PublicKey` 已是上面那对密钥的公钥
-> `OcvVq2hZwRpOOEPqF7KYeWzIsJqKjfjo1F4AnnO29ts=`（公钥进仓库是正常的）。
-> 只有换密钥时才需要重做这一步。
-
-把导出的公钥（base64 单行）填进 `src/Sider/UpdaterService.cs`：
-
-```csharp
-public const string PublicKey = "…base64 公钥…";
-```
-
-保持占位符（`REPLACE_WITH…`）或留空时更新器**整体禁用**并写日志，绝不会降级成
-「不校验签名」。`build_release.sh` 生成 appcast 前会校验这个常量与密钥目录里的
-`.pub` 是否配对，不配对就按缺失处理（发出去的更新会被客户端拒绝，不如不发）。
-
-### 3. 发版产出 appcast
-
-```bash
-export FOLDERIS_APP_VERSION=1.2.0        # 版本单一来源：注入 csproj 与 NSIS
-export FOLDERIS_APPCAST_REQUIRE=1        # 正式发布：产不出 appcast 直接失败
-./win-explorer-sidebar/build_release.sh
-```
-
-`FOLDERIS_APPCAST_REQUIRE=1` 时**必须显式给 `FOLDERIS_APP_VERSION`**：沿用默认值 1.1.0
-会打出一个与线上同版本号的包，appcast 照样生成，但所有客户端都判定「无更新」，
-发了等于没发。非 require 模式下沿用默认值只会打印警告。
-构建号（设置页显示，不参与更新比对）来自 `FOLDERIS_BUILD_VERSION`，默认按当天日期生成。
-
-产物（`dist/`）：
-
-- `Folderis-Setup-1.2.0.exe` → 上传到 `https://dl.folderis.app/win/Folderis-Setup-1.2.0.exe`
-- `appcast.xml` + `appcast.xml.signature` → 上传到 `https://dl.folderis.app/win/`
-- `Folderis-Setup.exe`（同一个文件的不带版本号副本，QA 脚本沿用老名字）
-
-`appcast.xml.signature` 必须一起上传：客户端在 Strict 模式下会先下载它验 appcast，
-缺了就整条 feed 作废。工具或密钥缺失时脚本默认打印醒目警告后跳过（和 Authenticode
-签名一个风格），`FOLDERIS_APPCAST_REQUIRE=1` 时直接失败。回退的 .NET 安装器
-（`INSTALLER_MODE=dotnet`）一定会弹窗、不能无人值守安装，此时脚本不产 appcast。
-
-其他环境变量：`FOLDERIS_UPDATE_BASE_URL`（默认 `https://dl.folderis.app`）、
-`FOLDERIS_NETSPARKLE_KEYS`、`FOLDERIS_APPCAST_PUBKEY_CHECK=0`（本地测试用测试密钥时跳过配对校验）。
-
-### 4. 本地测试（伪造 appcast）
-
-```bash
-# ① 测试密钥（别用发布密钥）
-netsparkle-generate-appcast --generate-keys --key-path /tmp/nskeys
-netsparkle-generate-appcast --export --key-path /tmp/nskeys      # 记下公钥
-
-# ② 造一个“新版本”，feed 指向本机
-FOLDERIS_APP_VERSION=9.9.9 FOLDERIS_NETSPARKLE_KEYS=/tmp/nskeys \
-FOLDERIS_UPDATE_BASE_URL=http://192.168.x.x:8000 FOLDERIS_APPCAST_PUBKEY_CHECK=0 \
-  ./win-explorer-sidebar/build_release.sh
-
-# ③ 起静态服务器（目录结构必须有 win/）
-mkdir -p /tmp/feed/win
-cp win-explorer-sidebar/dist/appcast.xml* win-explorer-sidebar/dist/Folderis-Setup-9.9.9.exe /tmp/feed/win/
-(cd /tmp/feed && python3 -m http.server 8000)
-```
-
-Windows 真机上跑**旧版本**，用环境变量指到这个假 feed：
-
-```cmd
-set FOLDERIS_APPCAST_URL=http://192.168.x.x:8000/win/appcast.xml
-set FOLDERIS_NETSPARKLE_PUBKEY=<② 里的测试公钥>
-Folderis.exe
-```
-
-`FOLDERIS_NETSPARKLE_PUBKEY` 只是换一把公钥，**验签仍是 Strict**。
-观察 `%LOCALAPPDATA%\Sider\update.log`：应看到「发现新版本 9.9.9 → 已下载并验签通过」，
-面板顶部随后出现横幅；点「立即重启」后应用退出、静默装完自动拉起新版本。
-
-### 5. 回滚（有边界，先看清楚再用）
-
-把 `appcast.xml`（连同 `.signature`）重新生成成指向上一个版本的安装器再上传。
-**它只对「还没下载到坏版本」的客户端有效**，分三种情况：
-
-| 客户端状态 | 回滚后的实际行为 |
-|---|---|
-| 还没检查到坏版本 | ✅ 看到的是旧版本，且旧版本 ≤ 本机版本 → 判定无更新，不再提示 |
-| 已下载、横幅还挂着没点 | ❌ 横幅不会消失，点「立即重启」照装坏版本——更新器一旦进入「就绪」状态就不再检查 feed（避免装到一半换包）。只有用户重启应用后才会重新按新 feed 检查 |
-| 已经装上坏版本 | ❌ 回滚救不回来。必须发一版版本号继续往上走的修复版（例：1.2.0 坏 → 发 1.2.1，内容可以是 1.1.0 的代码） |
-
-所以回滚是止血、不是撤回：能拦住尚未升级的大多数人，拦不住已经升上去的。
-发版前务必先在真机把「静默下载 → 横幅 → 立即重启 → 装完自动拉起」跑一遍。
-
-### 6. 真机冒烟清单（首发前必须做，macOS 上无法替代）
-
-前置：按 §4 起好假 feed，Windows 机上装的是**旧版本**。
-
-**每次开始前先清掉残留安装包**，否则会走进「文件已存在」的分支，
-把真实下载路径（以及它特有的回调 item 为 null 的坑）整条跳过：
-
-```cmd
-del /q "%TEMP%\Folderis-Setup-*.exe"
-```
-
-| # | 检查项 | 期望 |
-|---|---|---|
-| 1 | 启动后约 20 秒看 `%LOCALAPPDATA%\Sider\update.log` | 有「发现新版本 → 已下载并验签通过」，**全程零弹窗** |
-| 2 | 面板顶部 | 出现横幅「新版本 X 已就绪，重启生效」，版本号完整（不是少一段的 `1.2`） |
-| 3 | 下载过程中发一条 AI 消息 | 回复期间横幅隐藏，回复结束后自动重新出现 |
-| 4 | 点「稍后」→ 重启应用 | 横幅收起；下次启动仍会提示 |
-| 5 | 点「立即重启」 | 应用退出 → 无任何安装界面 → 自动拉起新版本；设置页版本号/构建号已更新 |
-| 6 | 安装后 | 会话历史、API Key、技能运行时都还在（安装器只重建 `$INSTDIR`） |
-| 7 | 故意把 `appcast.xml.signature` 换成错的 | 日志写 appcast 无效，**不下载、不提示**（Strict 生效） |
-| 8 | 断网 | 日志写检查失败，界面无任何异常提示 |
+约 20 秒后应出现横幅;点「前往下载」开浏览器;点「稍后」后重启不再提示,
+把 version 再调大一档会重新亮起。
 
 ## 移植状态表
 
@@ -220,4 +110,4 @@ del /q "%TEMP%\Folderis-Setup-*.exe"
 | 会话按目录绑定 / 历史列表 | ⬜ 待移植 | 逻辑照抄 macOS 版 |
 | 命令确认卡 / 审批模式 | ⬜ 待移植 | |
 | 打包（MSIX/Inno Setup） | ⬜ 未开始 | |
-| 自动更新（无感升级） | ✅ 代码完成 | NetSparkle 2.3.0 + Ed25519 Strict；待真机冒烟 |
+| 版本公告（更新提示） | ✅ 完成 | announce.json 轮询 + 横幅引导网页下载；与 mac 同通道 |
