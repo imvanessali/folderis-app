@@ -36,25 +36,38 @@ RUNTIME_SRC=/path/to/release-runtime ARCH=arm64 ./make_release_matrix.sh
 
 脚本会依次构建两个版本，并分别完成 App 公证/装订、DMG 公证/装订和 Gatekeeper/映像校验。最终产物和 SHA-256 清单统一发布到仓库根目录 `Release/<版本号>/`（Windows 的 `build_release.sh` 也发布到同一目录）；各子项目的 `dist/` 只是构建暂存。仅测试构建流程、不提交 Apple 公证时，可增加 `SKIP_NOTARIZE=1`。
 
-## 自动更新（Sparkle）
+## 版本公告（更新提示）
 
-发布件内置 Sparkle 2：后台静默检查（24h 周期）+ 静默下载，就绪后面板出现温和横幅「新版本已就绪，重启生效」；点「稍后」收起横幅，更新在退出时自动安装（应用长期不退出时，下个检查周期会温和地再次提醒）。开发构建（`build_app.sh`/Xcode 直接跑）没有 feed 配置，更新器自动禁用。
+两端更新提示走同一条轻量通道（产品决策 2026-07-30，替代此前的 Sparkle/NetSparkle 静默安装方案）：应用启动 20 秒后（此后每 24h）静默拉取
 
-**一次性准备（发布机）：**
-
-1. 生成 EdDSA 密钥（私钥进钥匙串）：`01-finder-sidebar/.build/artifacts/sparkle/Sparkle/bin/generate_keys`
-   ⚠️ **私钥丢失 = 存量用户永远收不到更新**，务必把私钥（`generate_keys -x 备份文件` 导出）存进密码管理器。
-2. R2 侧：创建 bucket `folderis-updates` 并绑定自定义域（默认约定 `https://dl.folderis.app`，构建与上传都可用 `FOLDERIS_UPDATE_BASE_URL` 覆盖）；`npm i -g wrangler && wrangler login`。
-
-**每次发版：**
-
-```bash
-cd 01-finder-sidebar
-RUNTIME_SRC=… ARCH=arm64 ./make_release_matrix.sh   # 构建+公证，收尾自动生成 dist/appcast-arm64.xml
-cd .. && ./publish_release.sh mac                    # 先传 DMG（版本化文件名、长缓存），后传 appcast（no-cache）
+```
+https://folderis-announce.folderis.workers.dev/announce.json
 ```
 
-appcast 是发布开关：包先就位，appcast 替换的瞬间才对用户生效。**回滚** = 检出旧版本重跑 `make_appcast.sh`（或直接用当时留档的 appcast）再 `publish_release.sh mac`，存量用户会更新回旧版。Windows 端的对应流程见 `win-explorer-sidebar/README.md`。
+（Cloudflare Worker 静态托管，源码在 `announce/`；客户端可用 `FOLDERIS_ANNOUNCE_URL` 环境变量覆盖，测试用。）发现比本机新的版本号，就在面板顶部出温和横幅「新版本 X 已发布 → 前往下载」，点击用浏览器打开 JSON 里配置的网页；点「稍后」则该版本内不再提醒（下发更新的版本号后重新亮起）。不下载、不安装、无签名验签，AI 任务进行中横幅自动挂起。
+
+**上传下载件（发新版时,先于公告）：**
+
+DMG 传到公开仓库 [folderis-releases](https://github.com/imvanessali/folderis-releases) 的 Release,附件用**固定文件名**——官网下载按钮用的是 `releases/latest/download/Folderis-AppleSilicon.dmg` 永久链接,发新版链接不变：
+
+```bash
+cd Release/<构建号>
+gh release create <构建号> --repo imvanessali/folderis-releases \
+  --title "Folderis <构建号>" --notes "SHA256: $(cut -d' ' -f1 *SHA256*.txt)" \
+  Folderis-AppleSilicon.dmg Folderis-macOS-AppleSilicon-SHA256.txt
+```
+
+**下发/撤回公告：**
+
+```bash
+# 编辑 announce/public/announce.json:
+#   mac.version / win.version  比装机版本新才亮横幅(与构建号同格式,如 20260730.1)
+#   mac.url / win.url          「前往下载」打开的网页
+#   message.zh / message.en    可选自定义横幅文案,留空用默认「新版本 X 已发布」
+./publish_notice.sh   # 校验 JSON → wrangler deploy → 回读边缘验证
+```
+
+撤回 = 把 version 改回线上已发布的版本号再跑一次；横幅在客户端下一轮检查时收起。发布机一次性准备只有 `npm i -g wrangler && wrangler login`。
 
 ## 使用
 

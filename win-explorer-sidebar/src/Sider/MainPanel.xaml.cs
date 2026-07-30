@@ -18,6 +18,7 @@ public partial class MainPanel : Window
     private ExplorerContext? _context;
     private CancellationTokenSource? _cts;
     private readonly CliBackend _cliBackend = new();
+    private readonly AnnouncementService _announce = new();
 
     /// <summary>一段会话的身份与数据。任务启动时按引用捕获，此后面板显示
     /// 可以自由切换到别的会话，任务继续往自己捕获的这份里写。</summary>
@@ -50,8 +51,6 @@ public partial class MainPanel : Window
     private SelectableText? _turnTypingView;
 
     private bool ViewingTurn => _turn is not null && ReferenceEquals(_turn.Conv, _conv);
-    private readonly UpdaterService _updater = new();
-    private bool _updateDismissed;
 
     public MainPanel()
     {
@@ -105,43 +104,35 @@ public partial class MainPanel : Window
         };
         UpdateEmptyState();
 
-        // 自动更新：后台静默检查+下载，就绪后只出横幅（必须在 UI 线程构造，
-        // NetSparkle 用当前 SynchronizationContext 把事件抛回来）。
-        UpdateRestartButton.Content = L10n.T("立即重启", "Restart now");
+        // 版本公告：后台静默拉取 announce.json，有新版本只出横幅引导到网页下载
+        // （在 UI 线程 Start，服务用 SynchronizationContext 把状态变化抛回来）。
+        UpdateDownloadButton.Content = L10n.T("前往下载", "Download");
         UpdateLaterButton.Content = L10n.T("稍后", "Later");
-        _updater.StateChanged += () => Dispatcher.BeginInvoke(RefreshUpdateBanner);
-        _updater.Start();
+        _announce.StateChanged += () => Dispatcher.BeginInvoke(RefreshUpdateBanner);
+        _announce.Start();
     }
 
     /// <summary>
-    /// 更新横幅：新版下载就绪、AI 空闲、非历史页、用户本次没点“稍后”才显示。
+    /// 版本公告横幅：有新版本公告、AI 空闲、非历史页才显示。
     /// AI 正在流式回复或跑工具循环时一律挂起，等空闲再出现。
     /// </summary>
     private void RefreshUpdateBanner()
     {
-        var show = _updater.IsReady && !_updateDismissed && !_sending && !_showingHistory;
+        var show = _announce.HasNotice && !_sending && !_showingHistory;
         if (show)
-            UpdateBannerText.Text = L10n.T(
-                $"新版本 {_updater.ReadyVersion} 已就绪，重启生效",
-                $"Version {_updater.ReadyVersion} is ready — restart to apply");
+            UpdateBannerText.Text = _announce.Message ?? L10n.T(
+                $"新版本 {_announce.Version} 已发布",
+                $"Version {_announce.Version} is available");
         UpdateBanner.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void OnUpdateRestartClick(object sender, RoutedEventArgs e)
-    {
-        SaveConversation();          // 先落盘会话，安装脚本会等本进程退出
-        UpdateRestartButton.IsEnabled = false;
-        UpdateBannerText.Text = L10n.T("正在安装新版本，稍后自动重启…",
-                                       "Installing the update — Folderis will restart…");
-        _updater.InstallAndRestart();
-    }
+    /// <summary>「前往下载」：用默认浏览器打开公告里的发布页。</summary>
+    private void OnUpdateDownloadClick(object sender, RoutedEventArgs e)
+        => _announce.OpenDownloadPage();
 
-    /// <summary>“稍后”只收起本次运行的横幅；下次启动仍会提示。</summary>
+    /// <summary>「稍后」在该版本内不再提醒（跨重启记忆）；下发新版本号后重新亮起。</summary>
     private void OnUpdateLaterClick(object sender, RoutedEventArgs e)
-    {
-        _updateDismissed = true;
-        RefreshUpdateBanner();
-    }
+        => _announce.Dismiss();
 
     private void OnContextChanged(ExplorerContext? ctx)
     {

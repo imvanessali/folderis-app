@@ -1,0 +1,130 @@
+import AppKit
+import SwiftUI
+
+/// 版本公告(轻量更新提示):启动后静默拉取 announce.json,发现比本机新的
+/// 版本就在面板顶部出横幅「前往下载」,点击打开发布页网页。不下载、不安装、
+/// 无签名验签——下发内容完全由发布者改 JSON 控制,撤回即恢复安静。
+/// 「稍后」在该版本内不再提醒(记 UserDefaults,更新版本号后会再次亮起)。
+@MainActor
+final class AnnouncementManager: ObservableObject {
+    static let shared = AnnouncementManager()
+
+    struct Notice: Equatable {
+        let version: String
+        let page: URL
+        /// 发布者自定义文案(announce.json 的 message.zh/en),空则用默认文案。
+        let message: String?
+    }
+
+    @Published private(set) var notice: Notice?
+
+    /// 公告地址:Cloudflare Worker 静态托管,FOLDERIS_ANNOUNCE_URL 可覆盖(测试用)。
+    static let defaultFeed = "https://folderis-announce.folderis.workers.dev/announce.json"
+    private static let dismissedKey = "announceDismissedVersion"
+    private static let startupDelay: UInt64 = 20 * 1_000_000_000
+    private static let checkInterval: UInt64 = 24 * 3600 * 1_000_000_000
+
+    private var loop: Task<Void, Never>?
+
+    func start() {
+        guard loop == nil else { return }
+        loop = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.startupDelay)
+            while !Task.isCancelled {
+                await self?.checkOnce()
+                try? await Task.sleep(nanoseconds: Self.checkInterval)
+            }
+        }
+    }
+
+    func openDownloadPage() {
+        guard let notice else { return }
+        NSWorkspace.shared.open(notice.page)
+    }
+
+    /// 「稍后」:本版本内(含重启)不再提醒;下发更新的版本号后重新亮起。
+    func dismiss() {
+        guard let notice else { return }
+        UserDefaults.standard.set(notice.version, forKey: Self.dismissedKey)
+        self.notice = nil
+    }
+
+    private func checkOnce() async {
+        let feed = ProcessInfo.processInfo.environment["FOLDERIS_ANNOUNCE_URL"]
+            ?? Self.defaultFeed
+        guard let url = URL(string: feed) else { return }
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 15
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let mac = root["mac"] as? [String: Any],
+              let version = (mac["version"] as? String)?
+                  .trimmingCharacters(in: .whitespaces), !version.isEmpty,
+              let pageString = (mac["url"] as? String)?
+                  .trimmingCharacters(in: .whitespaces),
+              let page = URL(string: pageString), pageString.hasPrefix("https://")
+        else { return }  // 断网/格式错:静默保持现状,等下一轮
+
+        // 与构建号比对(CFBundleVersion,如 20260727.4)——announce.json 的
+        // version 用同一格式;营销版本号(1.1.0)不参与比较。
+        let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion")
+            as? String ?? "0"
+        guard Self.isNewer(version, than: current),
+              UserDefaults.standard.string(forKey: Self.dismissedKey) != version
+        else {
+            notice = nil  // 公告被撤回/已是最新:收起可能还亮着的横幅
+            return
+        }
+        let messages = root["message"] as? [String: Any]
+        let message = (messages?[L10n.isChinese ? "zh" : "en"] as? String)?
+            .trimmingCharacters(in: .whitespaces)
+        notice = Notice(
+            version: version, page: page,
+            message: (message?.isEmpty ?? true) ? nil : message)
+    }
+
+    /// 按 "." 分段数值比较(20260730.1 > 20260727.4),缺段补零。
+    nonisolated static func isNewer(_ a: String, than b: String) -> Bool {
+        let pa = a.split(separator: ".").map { Int($0) ?? 0 }
+        let pb = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(pa.count, pb.count) {
+            let x = i < pa.count ? pa[i] : 0
+            let y = i < pb.count ? pb[i] : 0
+            if x != y { return x > y }
+        }
+        return false
+    }
+}
+
+/// 面板顶部的版本公告横幅:与更新就绪横幅同风格,动作是打开下载网页。
+struct AnnouncementBanner: View {
+    let notice: AnnouncementManager.Notice
+    let onDownload: () -> Void
+    let onLater: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(.tint)
+            Text(notice.message
+                 ?? L("新版本 \(notice.version) 已发布",
+                      "Version \(notice.version) is available"))
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button(L("前往下载", "Download"), action: onDownload)
+                .font(.caption)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            Button(L("稍后", "Later"), action: onLater)
+                .font(.caption)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.accentColor.opacity(0.08))
+    }
+}

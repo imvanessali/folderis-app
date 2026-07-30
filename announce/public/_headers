@@ -1,0 +1,4 @@
+# 官网(folderis.app)要跨域读 announce.json 显示当前版本号
+/announce.json
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-cache

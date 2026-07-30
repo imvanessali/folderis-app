@@ -24,8 +24,7 @@
 		BA5E00000000000000000021 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA5E00000000000000000022 /* OnboardingView.swift */; };
 		F87EB6EACB01C6E7D9CCE96E /* FinderContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E8DDD82A6EC6EAE05ACB39 /* FinderContext.swift */; };
 		FB8ACAB5553E541C3E4F7DEE /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD01BC156B6BCFFD95D51925 /* SettingsView.swift */; };
-		5BA9AC1E000000000000B001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 5BA9AC1E000000000000B003 /* Sparkle */; };
-		5BA9AC1E000000000000B005 /* UpdaterManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA9AC1E000000000000B006 /* UpdaterManager.swift */; };
+		5BA9AC1E000000000000B005 /* AnnouncementManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA9AC1E000000000000B006 /* AnnouncementManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,7 +56,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				5BA9AC1E000000000000B001 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -86,7 +84,7 @@
 		CB048C05E4A305F99CD5F697 /* SidebarPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarPanelView.swift; sourceTree = "<group>"; };
 		ED3854768FFCCD0AD6C05A4C /* FinderExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FinderExtension.entitlements; sourceTree = "<group>"; };
 		FF73DE9380722B306F092863 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		5BA9AC1E000000000000B006 /* UpdaterManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterManager.swift; sourceTree = "<group>"; };
+		5BA9AC1E000000000000B006 /* AnnouncementManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnouncementManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -138,7 +136,7 @@
 				C1C46D8917615E3F9D7C4012 /* main.swift */,
 				AD01BC156B6BCFFD95D51925 /* SettingsView.swift */,
 				CB048C05E4A305F99CD5F697 /* SidebarPanelView.swift */,
-				5BA9AC1E000000000000B006 /* UpdaterManager.swift */,
+				5BA9AC1E000000000000B006 /* AnnouncementManager.swift */,
 			);
 			path = HostApp;
 			sourceTree = "<group>";
@@ -161,7 +159,6 @@
 			);
 			name = FinderSidebarHost;
 			packageProductDependencies = (
-				5BA9AC1E000000000000B003 /* Sparkle */,
 			);
 			productName = FinderSidebarHost;
 			productReference = BA29EFB989DCF19A06D7404F /* FinderSidebarHost.app */;
@@ -212,7 +209,6 @@
 			mainGroup = 0313736E4E79896826C74FE2;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				5BA9AC1E000000000000B002 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			projectDirPath = "";
 			projectRoot = "";
@@ -237,7 +233,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0BFE8E7D74E20556103B68C1 /* AppDelegate.swift in Sources */,
-				5BA9AC1E000000000000B005 /* UpdaterManager.swift in Sources */,
+				5BA9AC1E000000000000B005 /* AnnouncementManager.swift in Sources */,
 				2CC76F54B843BE5801D421EF /* AppSettings.swift in Sources */,
 				A1B2C3D4E5F60718293A4B5C /* BrandLogo.swift in Sources */,
 				EAFB3C700E5011667222744B /* ChatMessage.swift in Sources */,
@@ -500,22 +496,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		5BA9AC1E000000000000B002 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.6.0;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		5BA9AC1E000000000000B003 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5BA9AC1E000000000000B002 /* XCRemoteSwiftPackageReference "Sparkle" */;
-			productName = Sparkle;
-		};
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 7C2B92018F5F5D7A8EDA4E54 /* Project object */;

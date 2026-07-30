@@ -1,0 +1,7 @@
+// 版本公告下发:纯静态资产 Worker,免费额度内,无需绑卡/域名/R2。
+// 改 public/announce.json 后跑根目录 publish_notice.sh(或此目录 wrangler deploy)即生效。
+{
+  "name": "folderis-announce",
+  "compatibility_date": "2026-07-01",
+  "assets": { "directory": "./public" }
+}

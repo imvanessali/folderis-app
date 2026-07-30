@@ -15,15 +15,9 @@ rm -rf "$APP_BUNDLE" FinderSidebar.app
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks"
 
 cp "$BUILD_DIR/$BIN_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-# SwiftPM 不会自动嵌入二进制依赖:把 Sparkle.framework 放进 Frameworks
-# （可执行文件已带 @executable_path/../Frameworks 的 rpath）。
-SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
-[ -d "$SPARKLE_FW" ] || { echo "缺少 Sparkle.framework（先 swift build 让 SPM 拉取二进制依赖）"; exit 1; }
-cp -R "$SPARKLE_FW" "$APP_BUNDLE/Contents/Frameworks/"
 cp branding/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 cp branding/OrbLogo.png "$APP_BUNDLE/Contents/Resources/OrbLogo.png"
 cp branding/OrbLogoTransparent.png "$APP_BUNDLE/Contents/Resources/OrbLogoTransparent.png"
-cp branding/ClippyLogo.png "$APP_BUNDLE/Contents/Resources/ClippyLogo.png"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
