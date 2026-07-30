@@ -27,7 +27,8 @@ struct ChatView: View {
                                 MessageBubble(message: message, folder: chat.boundFolder)
                                     .id(message.id)
                             }
-                            if chat.isSending {
+                            // 忙碌行只出现在运行中任务所在的会话里。
+                            if chat.isViewingRunningTask {
                                 VStack(alignment: .leading, spacing: 5) {
                                     HStack(spacing: 6) {
                                         ProgressView().controlSize(.small)
@@ -64,7 +65,7 @@ struct ChatView: View {
                         .padding()
                     }
 
-                    if chat.messages.isEmpty && !chat.isSending {
+                    if chat.messages.isEmpty && !chat.isViewingRunningTask {
                         GeometryReader { geometry in
                             EmptyStateView(availableHeight: geometry.size.height)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -72,6 +73,19 @@ struct ChatView: View {
                     }
                 }
                 .clipped()
+                // 会话切换不硬切：旧内容先淡出露出白底，新内容再淡入（渐白过渡）。
+                .id(chat.conversationID)
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(.easeIn(duration: 0.16).delay(0.1)),
+                    removal: .opacity.animation(.easeOut(duration: 0.1))
+                ))
+                .animation(.default, value: chat.conversationID)
+                // .id 切换会重建滚动视图：新会话出现时直接定位到底部（最新消息）。
+                .onAppear {
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("chat-bottom", anchor: .bottom)
+                    }
+                }
                 .onChange(of: chat.messages.count) { _ in
                     DispatchQueue.main.async {
                         proxy.scrollTo("chat-bottom", anchor: .bottom)
@@ -94,7 +108,8 @@ struct ChatView: View {
             }
 
             // Claude Code 式命令确认卡：AI 请求执行 shell 命令时挂起等待。
-            if let pending = chat.pendingCommand {
+            // 只在查看任务会话时显示；切走时任务停在审批上，切回可继续决策。
+            if chat.isViewingRunningTask, let pending = chat.pendingCommand {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "terminal")
@@ -142,7 +157,10 @@ struct ChatView: View {
             // 苹果“信息”App 风格的聊天输入条：圆角胶囊 + 内嵌圆形发送按钮。
             // 回车发送，Option+回车换行。
             HStack(alignment: .center, spacing: 6) {
-                TextField(L("描述操作…", "Describe a task…"), text: $chat.draft, axis: .vertical)
+                TextField(chat.isSending && !chat.isViewingRunningTask
+                              ? L("另一个对话的任务进行中，完成后可发送…", "A task is running in another chat…")
+                              : L("描述操作…", "Describe a task…"),
+                          text: $chat.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .lineLimit(2...8)
@@ -150,17 +168,18 @@ struct ChatView: View {
                     .padding(.vertical, 12)
                     .onSubmit { chat.send() }
 
-                // 空闲时是发送按钮；agent 干活时变成停止按钮（对齐 Claude Code 的可中断性）。
+                // 空闲时是发送按钮；查看运行中任务的会话时变成停止按钮
+                // （对齐 Claude Code 的可中断性）。查看其他会话时禁用（单任务并发）。
                 Button {
-                    chat.isSending ? chat.cancelSending() : chat.send()
+                    chat.isViewingRunningTask ? chat.cancelSending() : chat.send()
                 } label: {
-                    Image(systemName: chat.isSending ? "stop.circle.fill" : "arrow.up.circle.fill")
+                    Image(systemName: chat.isViewingRunningTask ? "stop.circle.fill" : "arrow.up.circle.fill")
                         .font(.system(size: 25))
                         .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(chat.isSending || canSend ? Color.accentColor : Color.secondary.opacity(0.45))
+                        .foregroundStyle(chat.isViewingRunningTask || canSend ? Color.accentColor : Color.secondary.opacity(0.45))
                 }
                 .buttonStyle(.plain)
-                .disabled(!chat.isSending && !canSend)
+                .disabled(!chat.isViewingRunningTask && !canSend)
                 .padding(.trailing, 6)
             }
             .background(

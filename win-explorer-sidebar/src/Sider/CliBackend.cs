@@ -12,8 +12,6 @@ public enum BackendKind { BuiltinApi, ClaudeCode, Codex, Cursor }
 
 public sealed class CliBackend
 {
-    /// <summary>每后端一个会话 id（resume 用），由调用方按会话持久化。</summary>
-    public Dictionary<string, string> SessionIds { get; set; } = [];
 
     public static string? DetectPath(string name)
     {
@@ -90,8 +88,11 @@ public sealed class CliBackend
             .FirstOrDefault(File.Exists);
     }
 
+    /// <summary>sessions：每后端一个会话 id（resume 用），由调用方按会话捕获传入——
+    /// 面板显示切走后任务仍 resume 自己会话的 id。</summary>
     public async Task<string?> RunAsync(
         BackendKind kind, string cliPath, string prompt, string cwd, bool yolo,
+        Dictionary<string, string> sessions,
         Action<string> onDelta, Action<string> onActivity, CancellationToken ct)
     {
         var key = kind.ToString();
@@ -99,12 +100,12 @@ public sealed class CliBackend
         if (kind == BackendKind.ClaudeCode)
         {
             args.AddRange(["-p", prompt, "--output-format", "stream-json", "--verbose"]);
-            if (SessionIds.TryGetValue(key, out var sid)) args.AddRange(["--resume", sid]);
+            if (sessions.TryGetValue(key, out var sid)) args.AddRange(["--resume", sid]);
             args.AddRange(yolo ? ["--dangerously-skip-permissions"] : ["--permission-mode", "acceptEdits"]);
         }
         else if (kind == BackendKind.Codex)
         {
-            if (SessionIds.TryGetValue(key, out var sid)) args.AddRange(["exec", "resume", sid, "--json"]);
+            if (sessions.TryGetValue(key, out var sid)) args.AddRange(["exec", "resume", sid, "--json"]);
             else args.AddRange(["exec", "--json"]);
             args.Add(yolo ? "--dangerously-bypass-approvals-and-sandbox" : "--full-auto");
             args.Add(prompt);
@@ -116,7 +117,7 @@ public sealed class CliBackend
                 "--output-format", "stream-json",
                 "--stream-partial-output"
             ]);
-            if (SessionIds.TryGetValue(key, out var sid)) args.AddRange(["--resume", sid]);
+            if (sessions.TryGetValue(key, out var sid)) args.AddRange(["--resume", sid]);
             // Cursor print mode only writes files when --force is enabled.
             if (yolo) args.Add("--force");
         }
