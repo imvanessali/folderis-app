@@ -23,7 +23,7 @@ public sealed class UpdaterService
     /// 换成真实公钥前保持占位符：占位符状态下更新器整体禁用，
     /// 绝不降级成“不校验签名”。生成方式见 win-explorer-sidebar/README.md。
     /// </summary>
-    public const string PublicKey = "REPLACE_WITH_ED25519_PUBLIC_KEY";
+    public const string PublicKey = "OcvVq2hZwRpOOEPqF7KYeWzIsJqKjfjo1F4AnnO29ts=";
 
     /// <summary>更新分发根地址（与 macOS 端同一个域）。</summary>
     public const string DefaultBaseUrl = "https://dl.folderis.app";
@@ -177,15 +177,20 @@ public sealed class UpdaterService
     }
 
     /// <summary>
-    /// 公钥来源：内置常量优先；FOLDERIS_NETSPARKLE_PUBKEY 仅供本地起 http server
-    /// 测试假 appcast 用（依然是 Strict 校验，只是换一把公钥）。
+    /// 公钥来源：FOLDERIS_NETSPARKLE_PUBKEY 优先（仅供本地起 http server 测试假 appcast，
+    /// 会写日志留痕；依然是 Strict 校验，只是换一把公钥），否则用内置常量；
+    /// 常量仍是占位符时返回空 → 调用方直接禁用更新器。
     /// </summary>
-    private static string ResolvePublicKey()
+    private string ResolvePublicKey()
     {
+        var overrideKey = Environment.GetEnvironmentVariable("FOLDERIS_NETSPARKLE_PUBKEY");
+        if (!string.IsNullOrWhiteSpace(overrideKey))
+        {
+            Log("注意：FOLDERIS_NETSPARKLE_PUBKEY 覆盖了内置公钥（本地测试用），验签仍为 Strict。");
+            return overrideKey.Trim();
+        }
         var key = PublicKey;
-        if (key.StartsWith("REPLACE_WITH", StringComparison.Ordinal))
-            key = Environment.GetEnvironmentVariable("FOLDERIS_NETSPARKLE_PUBKEY") ?? "";
-        return key.Trim();
+        return key.StartsWith("REPLACE_WITH", StringComparison.Ordinal) ? "" : key.Trim();
     }
 
     private static void ShutdownApp()

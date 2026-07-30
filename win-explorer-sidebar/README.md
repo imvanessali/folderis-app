@@ -60,8 +60,8 @@ export FOLDERIS_SIGN_REQUIRE=1                      # 正式发布：缺证书�
 
 ## 自动更新（NetSparkleUpdater）
 
-> 状态：代码与发版脚本完成，**待 Windows 真机冒烟**（静默下载、`/S` 安装、
-> 装完自动重启这三步在 macOS 上无法验证）。
+> 状态：代码、发版脚本、签名密钥均已就位，**待 Windows 真机冒烟**（静默下载、
+> `/S` 安装、装完自动重启这三步在 macOS 上无法验证）——清单见下面第 6 节。
 
 机制（与 macOS 端 Sparkle 2 同一套约定）：
 
@@ -81,6 +81,12 @@ export FOLDERIS_SIGN_REQUIRE=1                      # 正式发布：缺证书�
 
 ### 1. 生成并备份密钥（只做一次）
 
+> **已完成（2026-07-30，本机 `~/.folderis-release/netsparkle`，权限 700/600）。**
+> ⚠️ **`NetSparkle_Ed25519.priv` 还没有离线备份 —— 这是当前唯一一份。**
+> 私钥丢失后，已装机的老版本再也收不到能通过验签的更新，只能引导用户手动重装。
+> 请尽快备份到 1Password / 加密 U 盘。私钥永远不进仓库。
+> 换发布机时把整个目录搬过去，或用 `FOLDERIS_NETSPARKLE_KEYS` 指到别处。
+
 ```bash
 dotnet tool install -g NetSparkleUpdater.Tools.AppCastGenerator --version 2.5.0
 export FOLDERIS_NETSPARKLE_KEYS="$HOME/.folderis-release/netsparkle"   # 默认值
@@ -88,20 +94,21 @@ netsparkle-generate-appcast --generate-keys --key-path "$FOLDERIS_NETSPARKLE_KEY
 netsparkle-generate-appcast --export --key-path "$FOLDERIS_NETSPARKLE_KEYS"  # 打印公钥
 ```
 
-`NetSparkle_Ed25519.priv` **必须离线备份**（1Password / 加密 U 盘）：私钥丢失后
-已装机的老版本再也无法收到能通过验签的更新，只能引导用户手动重装。私钥永远不进仓库。
-
 ### 2. 把公钥内置进应用
 
-把上一步导出的公钥（base64 单行）填进 `src/Sider/UpdaterService.cs`：
+> **已完成**：`src/Sider/UpdaterService.cs` 里的 `PublicKey` 已是上面那对密钥的公钥
+> `OcvVq2hZwRpOOEPqF7KYeWzIsJqKjfjo1F4AnnO29ts=`（公钥进仓库是正常的）。
+> 只有换密钥时才需要重做这一步。
+
+把导出的公钥（base64 单行）填进 `src/Sider/UpdaterService.cs`：
 
 ```csharp
-public const string PublicKey = "REPLACE_WITH_ED25519_PUBLIC_KEY";   // ← 换成真实公钥
+public const string PublicKey = "…base64 公钥…";
 ```
 
-占位符状态下更新器**整体禁用**并写日志，绝不会降级成「不校验签名」。
-`build_release.sh` 生成 appcast 前会校验这个常量与密钥目录里的 `.pub` 是否配对，
-不配对就按缺失处理（发出去的更新会被客户端拒绝，不如不发）。
+保持占位符（`REPLACE_WITH…`）或留空时更新器**整体禁用**并写日志，绝不会降级成
+「不校验签名」。`build_release.sh` 生成 appcast 前会校验这个常量与密钥目录里的
+`.pub` 是否配对，不配对就按缺失处理（发出去的更新会被客户端拒绝，不如不发）。
 
 ### 3. 发版产出 appcast
 
@@ -173,6 +180,28 @@ Folderis.exe
 
 所以回滚是止血、不是撤回：能拦住尚未升级的大多数人，拦不住已经升上去的。
 发版前务必先在真机把「静默下载 → 横幅 → 立即重启 → 装完自动拉起」跑一遍。
+
+### 6. 真机冒烟清单（首发前必须做，macOS 上无法替代）
+
+前置：按 §4 起好假 feed，Windows 机上装的是**旧版本**。
+
+**每次开始前先清掉残留安装包**，否则会走进「文件已存在」的分支，
+把真实下载路径（以及它特有的回调 item 为 null 的坑）整条跳过：
+
+```cmd
+del /q "%TEMP%\Folderis-Setup-*.exe"
+```
+
+| # | 检查项 | 期望 |
+|---|---|---|
+| 1 | 启动后约 20 秒看 `%LOCALAPPDATA%\Sider\update.log` | 有「发现新版本 → 已下载并验签通过」，**全程零弹窗** |
+| 2 | 面板顶部 | 出现横幅「新版本 X 已就绪，重启生效」，版本号完整（不是少一段的 `1.2`） |
+| 3 | 下载过程中发一条 AI 消息 | 回复期间横幅隐藏，回复结束后自动重新出现 |
+| 4 | 点「稍后」→ 重启应用 | 横幅收起；下次启动仍会提示 |
+| 5 | 点「立即重启」 | 应用退出 → 无任何安装界面 → 自动拉起新版本；设置页版本号/构建号已更新 |
+| 6 | 安装后 | 会话历史、API Key、技能运行时都还在（安装器只重建 `$INSTDIR`） |
+| 7 | 故意把 `appcast.xml.signature` 换成错的 | 日志写 appcast 无效，**不下载、不提示**（Strict 生效） |
+| 8 | 断网 | 日志写检查失败，界面无任何异常提示 |
 
 ## 移植状态表
 
