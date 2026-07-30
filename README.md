@@ -46,6 +46,17 @@ https://folderis-announce.folderis.workers.dev/announce.json
 
 （Cloudflare Worker 静态托管，源码在 `announce/`；客户端可用 `FOLDERIS_ANNOUNCE_URL` 环境变量覆盖，测试用。）发现比本机新的版本号，就在面板顶部出温和横幅「新版本 X 已发布 → 前往下载」，点击用浏览器打开 JSON 里配置的网页；点「稍后」则该版本内不再提醒（下发更新的版本号后重新亮起）。不下载、不安装、无签名验签，AI 任务进行中横幅自动挂起。
 
+**上传下载件（发新版时,先于公告）：**
+
+DMG 传到公开仓库 [folderis-releases](https://github.com/imvanessali/folderis-releases) 的 Release,附件用**固定文件名**——官网下载按钮用的是 `releases/latest/download/Folderis-AppleSilicon.dmg` 永久链接,发新版链接不变：
+
+```bash
+cd Release/<构建号>
+gh release create <构建号> --repo imvanessali/folderis-releases \
+  --title "Folderis <构建号>" --notes "SHA256: $(cut -d' ' -f1 *SHA256*.txt)" \
+  Folderis-AppleSilicon.dmg Folderis-macOS-AppleSilicon-SHA256.txt
+```
+
 **下发/撤回公告：**
 
 ```bash
