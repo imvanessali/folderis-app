@@ -131,7 +131,7 @@
                 </Button>
             </Grid>
 
-            <Grid>
+            <Grid x:Name="ConversationHost">
                 <ScrollViewer x:Name="ChatScroll" VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="ChatList"/>
                 </ScrollViewer>

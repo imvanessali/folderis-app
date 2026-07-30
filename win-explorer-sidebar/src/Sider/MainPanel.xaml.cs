@@ -15,11 +15,41 @@ public partial class MainPanel : Window
     private readonly Settings _settings = Settings.Load();
     private readonly AgentClient _agent;
     private readonly SkillRunner _skills;
-    private List<JsonObject> _history = [];
     private ExplorerContext? _context;
-    private ExplorerContext? _pendingContext;
     private CancellationTokenSource? _cts;
     private readonly CliBackend _cliBackend = new();
+
+    /// <summary>一段会话的身份与数据。任务启动时按引用捕获，此后面板显示
+    /// 可以自由切换到别的会话，任务继续往自己捕获的这份里写。</summary>
+    private sealed class Conversation
+    {
+        public string? Binding;
+        public string? ConvId;
+        public List<JsonObject> History = [];
+        public Dictionary<string, string> Sessions = [];
+    }
+
+    /// <summary>面板当前显示的会话。</summary>
+    private Conversation _conv = new();
+
+    /// <summary>进行中任务的运行态：会话快照 + 工作目录 + 流式回复缓冲。
+    /// 显示切走后输出继续写缓冲，切回时由 AttachTurnViews 重挂。</summary>
+    private sealed class RunningTurn
+    {
+        public required Conversation Conv { get; init; }
+        public string? WorkRoot;
+        public System.Text.StringBuilder Reply = new();
+        public string Stage = "";
+        public int ElapsedSeconds;
+        public Border? PendingApprovalCard;
+    }
+
+    private RunningTurn? _turn;
+    /// <summary>任务回复气泡/活动行的视图引用——仅在查看任务会话时非空。</summary>
+    private SelectableText? _turnReplyView;
+    private SelectableText? _turnTypingView;
+
+    private bool ViewingTurn => _turn is not null && ReferenceEquals(_turn.Conv, _conv);
     private readonly UpdaterService _updater = new();
     private bool _updateDismissed;
 
@@ -115,14 +145,8 @@ public partial class MainPanel : Window
 
     private void OnContextChanged(ExplorerContext? ctx)
     {
-        // Explorer may briefly publish a different/empty selection while the
-        // agent creates files. Finish the current task against its original
-        // exact binding, then apply the latest Explorer context.
-        if (_sending)
-        {
-            _pendingContext = ctx;
-            return;
-        }
+        // 面板显示永远跟随当前选中（任务执行中也不冻结）；进行中的任务
+        // 已在启动时捕获了自己的会话与工作目录，不受这里影响。
         _context = ctx;
         ContextLabel.Text = ctx?.SelectedPaths.Count switch
         {
@@ -134,8 +158,12 @@ public partial class MainPanel : Window
                           $"{ctx.SelectedPaths.Count} items bound"),
             _ => ctx?.FolderPath ?? ""
         };
-        _fileTools.Root = ctx?.FolderPath;
-        _fileTools.ApprovalMode = _settings.ApprovalMode;
+        // 工具根目录被运行中的任务实时使用，任务结束时（SetSending(false)）再对齐。
+        if (_turn is null)
+        {
+            _fileTools.Root = ctx?.FolderPath;
+            _fileTools.ApprovalMode = _settings.ApprovalMode;
+        }
         // 精确粒度：文件夹本身与任意显式选择集合分别拥有独立会话。
         SwitchConversation(BindingKey(ctx));
         _attached.Clear();
@@ -148,21 +176,38 @@ public partial class MainPanel : Window
 
     private void OnSendClick(object sender, RoutedEventArgs e)
     {
-        if (_sending) { _cts?.Cancel(); return; }
+        if (_sending)
+        {
+            // 停止按钮只对着正在查看的任务会话生效；查看其他会话时按钮已禁用。
+            if (ViewingTurn) _cts?.Cancel();
+            return;
+        }
         _ = SendAsync();
     }
 
     private void SetSending(bool sending)
     {
         _sending = sending;
-        SendButton.Content = sending ? "\uE71A" : "\uE74A";
-        SendButton.ToolTip = sending ? L10n.T("停止", "Stop") : L10n.T("发送", "Send");
+        UpdateSendUi();
         RefreshUpdateBanner();       // 忙碌时收起更新横幅，空闲后再出现
-        if (!sending && _pendingContext is { } pending)
+        if (!sending)
         {
-            _pendingContext = null;
-            Dispatcher.BeginInvoke(() => OnContextChanged(pending));
+            // 任务期间挂起的工具根目录此刻对齐到最新上下文。
+            _fileTools.Root = _context?.FolderPath;
+            _fileTools.ApprovalMode = _settings.ApprovalMode;
         }
+    }
+
+    /// <summary>发送按钮/输入提示随「是否有任务在跑 × 是否正查看该任务会话」变化。</summary>
+    private void UpdateSendUi()
+    {
+        var stoppable = _sending && ViewingTurn;
+        SendButton.Content = stoppable ? "\uE71A" : "\uE74A";
+        SendButton.ToolTip = stoppable ? L10n.T("停止", "Stop") : L10n.T("发送", "Send");
+        SendButton.IsEnabled = !_sending || stoppable;
+        InputHint.Text = _sending && !ViewingTurn
+            ? L10n.T("另一个对话的任务进行中，完成后可发送…", "A task is running in another chat…")
+            : L10n.T("描述操作…", "Describe a task…");
     }
 
     private readonly List<string> _attached = [];
@@ -205,10 +250,25 @@ public partial class MainPanel : Window
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(8), Margin = new Thickness(0, 4, 0, 4)
         };
-        deny.Click += (_, _) => { ChatList.Children.Remove(card); tcs.TrySetResult(false); };
-        allow.Click += (_, _) => { ChatList.Children.Remove(card); tcs.TrySetResult(true); };
-        ChatList.Children.Add(card);
-        ChatScroll.ScrollToBottom();
+        deny.Click += (_, _) =>
+        {
+            ChatList.Children.Remove(card);
+            if (_turn?.PendingApprovalCard == card) _turn.PendingApprovalCard = null;
+            tcs.TrySetResult(false);
+        };
+        allow.Click += (_, _) =>
+        {
+            ChatList.Children.Remove(card);
+            if (_turn?.PendingApprovalCard == card) _turn.PendingApprovalCard = null;
+            tcs.TrySetResult(true);
+        };
+        // 用户切走时卡片随消息列表清空，任务停在审批上等待；切回时重挂继续决策。
+        if (_turn is not null) _turn.PendingApprovalCard = card;
+        if (_turn is null || ViewingTurn)
+        {
+            ChatList.Children.Add(card);
+            ChatScroll.ScrollToBottom();
+        }
         return tcs.Task;
     }
 
@@ -579,13 +639,13 @@ public partial class MainPanel : Window
 
     private void RegisterTask(string taskId, string text)
     {
-        _convId ??= Guid.NewGuid().ToString("N");
+        _conv.ConvId ??= Guid.NewGuid().ToString("N");
         var doc = new JsonObject
         {
             ["id"] = taskId,
             ["text"] = text,
-            ["binding"] = _boundBinding,
-            ["conversationId"] = _convId,
+            ["binding"] = _conv.Binding,
+            ["conversationId"] = _conv.ConvId,
             ["created"] = DateTime.Now.ToString("o")
         };
         File.WriteAllText(Path.Combine(TaskDir, taskId + ".json"), doc.ToJsonString());
@@ -754,28 +814,28 @@ public partial class MainPanel : Window
             ? TokenPath(normalized[FolderBindingPrefix.Length..]) : normalized;
     }
 
-    private string? _boundBinding;
-    private string? _convId;        // 当前会话 id（guid）
     private bool _showingHistory;
 
-    private void SaveConversation()
+    private void SaveConversation() => SaveConversation(_conv);
+
+    private void SaveConversation(Conversation conv)
     {
-        if (_boundBinding is null || _history.Count == 0) return;
-        _convId ??= Guid.NewGuid().ToString("N");
-        var title = _history.FirstOrDefault(m => (string?)m["role"] == "user") is { } first
+        if (conv.Binding is null || conv.History.Count == 0) return;
+        conv.ConvId ??= Guid.NewGuid().ToString("N");
+        var title = conv.History.FirstOrDefault(m => (string?)m["role"] == "user") is { } first
             ? ((string?)first["content"] ?? "").Split("\n\n---\n\n").Last().Trim() : "";
         if (title.Length > 40) title = title[..40];
         var sessions = new JsonObject();
-        foreach (var (backend, id) in _cliBackend.SessionIds) sessions[backend] = id;
+        foreach (var (backend, id) in conv.Sessions) sessions[backend] = id;
         var doc = new JsonObject
         {
-            ["binding"] = _boundBinding,
+            ["binding"] = conv.Binding,
             ["title"] = title,
             ["updated"] = DateTime.Now.ToString("o"),
             ["backendSessions"] = sessions,
-            ["items"] = new JsonArray(_history.Select(m => (JsonNode)m.DeepClone()).ToArray())
+            ["items"] = new JsonArray(conv.History.Select(m => (JsonNode)m.DeepClone()).ToArray())
         };
-        File.WriteAllText(Path.Combine(ConvDir, _convId + ".json"), doc.ToJsonString());
+        File.WriteAllText(Path.Combine(ConvDir, conv.ConvId + ".json"), doc.ToJsonString());
     }
 
     private static IEnumerable<(string id, JsonObject doc)> AllConversations()
@@ -790,18 +850,24 @@ public partial class MainPanel : Window
 
     private void LoadConversationDoc(string id, JsonObject doc)
     {
-        _convId = id;
-        _cliBackend.SessionIds = [];
+        _conv.ConvId = id;
+        _conv.Sessions = [];
         if (doc["backendSessions"] is JsonObject sessions)
             foreach (var pair in sessions)
                 if ((string?)pair.Value is { Length: > 0 } sessionId)
-                    _cliBackend.SessionIds[pair.Key] = sessionId;
-        _history = [];
-        ChatList.Children.Clear();
+                    _conv.Sessions[pair.Key] = sessionId;
+        _conv.History = [];
         foreach (var it in (doc["items"] as JsonArray) ?? [])
+            _conv.History.Add((JsonObject)it!.AsObject().DeepClone());
+        RenderHistory();
+    }
+
+    /// <summary>从 _conv.History 重绘消息列表。</summary>
+    private void RenderHistory()
+    {
+        ChatList.Children.Clear();
+        foreach (var o in _conv.History)
         {
-            var o = it!.AsObject();
-            _history.Add((JsonObject)o.DeepClone());
             var role = (string?)o["role"];
             var content = (string?)o["content"] ?? "";
             if (role == "user" && content.Length > 0)
@@ -813,23 +879,32 @@ public partial class MainPanel : Window
         UpdateEmptyState();
     }
 
-    /// <summary>绑定切换：存旧会话，载新绑定的最近一条会话（无则空白新会话）。</summary>
+    /// <summary>绑定切换：存旧会话，载新绑定的最近一条会话（无则空白新会话）。
+    /// 运行中的任务不受影响；切回任务所在绑定时重挂其在途输出。</summary>
     private void SwitchConversation(string? binding)
     {
         binding = NormalizeStoredBinding(binding);
-        if (SameBinding(binding, _boundBinding))
+        if (SameBinding(binding, _conv.Binding))
         {
             // 同一身份的最新形式：目标刚被重命名时路径部分会变，采纳新路径
             // 让后续 SaveConversation 把存量绑定自愈成当前路径。
-            _boundBinding = binding;
+            _conv.Binding = binding;
             return;
         }
-        if (_sending) _cts?.Cancel();
+        CrossfadeConversationArea();
         SaveConversation();
-        _boundBinding = binding;
-        _convId = null;
-        _cliBackend.SessionIds = [];
-        _history = [];
+        DetachTurnViews();
+        if (_turn is not null && SameBinding(binding, _turn.Conv.Binding))
+        {
+            // 切回运行中任务绑定的会话：复用其在途状态（含未落盘的流式输出）。
+            _conv = _turn.Conv;
+            _conv.Binding = binding;
+            RenderHistory();
+            AttachTurnViews();
+            UpdateSendUi();
+            return;
+        }
+        _conv = new Conversation { Binding = binding };
         ChatList.Children.Clear();
         if (binding is not null)
         {
@@ -837,17 +912,129 @@ public partial class MainPanel : Window
             if (latest.doc is not null) LoadConversationDoc(latest.id, latest.doc);
         }
         UpdateEmptyState();
+        UpdateSendUi();
+    }
+
+    /// <summary>会话切换的渐白过渡：把旧内容快照垫在白底上盖住消息区淡出，
+    /// 新内容在下面即时就位——视觉上是"渐白再浮现"，不硬切。</summary>
+    private System.Windows.Controls.Border? _convFadeOverlay;
+
+    private void CrossfadeConversationArea()
+    {
+        if (ConversationHost.ActualWidth < 1 || ConversationHost.ActualHeight < 1) return;
+        try
+        {
+            // 上一次过渡还没结束就先摘掉，避免快照把旧遮罩也拍进去。
+            if (_convFadeOverlay is not null)
+            {
+                ConversationHost.Children.Remove(_convFadeOverlay);
+                _convFadeOverlay = null;
+            }
+            var snapshot = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                (int)ConversationHost.ActualWidth, (int)ConversationHost.ActualHeight,
+                96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+            snapshot.Render(ConversationHost);
+            snapshot.Freeze();
+            var overlay = new System.Windows.Controls.Border
+            {
+                // 与面板同底色：淡出过程读作"渐白"。
+                Background = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(250, 250, 250)),
+                IsHitTestVisible = false,
+                Child = new System.Windows.Controls.Image { Source = snapshot }
+            };
+            System.Windows.Controls.Panel.SetZIndex(overlay, 99);
+            ConversationHost.Children.Add(overlay);
+            _convFadeOverlay = overlay;
+            var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(220))
+            {
+                EasingFunction = new System.Windows.Media.Animation.QuadraticEase
+                { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut }
+            };
+            fade.Completed += (_, _) =>
+            {
+                ConversationHost.Children.Remove(overlay);
+                if (ReferenceEquals(_convFadeOverlay, overlay)) _convFadeOverlay = null;
+            };
+            overlay.BeginAnimation(OpacityProperty, fade);
+        }
+        catch { /* 快照失败就退回硬切，不影响功能 */ }
+    }
+
+    /// <summary>切回任务会话时重挂在途输出：回复气泡（缓冲全文）+ 活动行 + 待决审批卡。</summary>
+    private void AttachTurnViews()
+    {
+        if (_turn is null || !ViewingTurn) return;
+        RemoveEmptyState();
+        if (_turn.Reply.Length > 0) EnsureTurnReplyView(_turn);
+        _turnTypingView = new SelectableText
+        {
+            Foreground = System.Windows.Media.Brushes.Gray,
+            FontSize = 11, Margin = new Thickness(4, 2, 0, 6)
+        };
+        ChatList.Children.Add(_turnTypingView);
+        UpdateTurnStatusText();
+        if (_turn.PendingApprovalCard is { } card && !ChatList.Children.Contains(card))
+            ChatList.Children.Add(card);
+        ChatScroll.ScrollToBottom();
+    }
+
+    /// <summary>切走时丢弃视图引用（控件随 ChatList 清空消失，数据留在任务缓冲里）。</summary>
+    private void DetachTurnViews()
+    {
+        _turnReplyView = null;
+        _turnTypingView = null;
+    }
+
+    private SelectableText EnsureTurnReplyView(RunningTurn turn)
+    {
+        if (_turnReplyView is null)
+        {
+            _turnReplyView = AppendBubble(turn.Reply.ToString(), isUser: false);
+            if (_turnTypingView is not null)
+            {
+                // 活动行保持在气泡下方（多轮工具期间持续可见，对齐 mac loading-row）
+                ChatList.Children.Remove(_turnTypingView);
+                ChatList.Children.Add(_turnTypingView);
+            }
+        }
+        return _turnReplyView;
+    }
+
+    private void AppendTurnReply(RunningTurn turn, string delta)
+    {
+        turn.Reply.Append(delta);
+        if (!ViewingTurn) return;
+        if (_turnReplyView is null) EnsureTurnReplyView(turn);   // 创建时已带缓冲全文
+        else _turnReplyView.Text += delta;
+    }
+
+    private void SetTurnReply(RunningTurn turn, string text)
+    {
+        turn.Reply.Clear();
+        turn.Reply.Append(text);
+        if (ViewingTurn) EnsureTurnReplyView(turn).Text = text;
+    }
+
+    private void UpdateTurnStatusText()
+    {
+        if (_turn is null || _turnTypingView is null) return;
+        var seconds = _turn.ElapsedSeconds;
+        _turnTypingView.Text = seconds >= 30
+            ? L10n.T($"{_turn.Stage} · {seconds} 秒 · 任务仍在正常运行", $"{_turn.Stage} · {seconds}s · still running normally")
+            : L10n.T($"{_turn.Stage} · {seconds} 秒", $"{_turn.Stage} · {seconds}s");
     }
 
     private void OnNewChatClick(object sender, RoutedEventArgs e)
     {
-        if (_sending) _cts?.Cancel();
+        if (ViewingTurn) _cts?.Cancel();   // 对着运行中的会话新建 = 停止该任务
+        CrossfadeConversationArea();
         SaveConversation();          // 旧会话保留（mac 语义：新建≠删除）
-        _convId = null;
-        _cliBackend.SessionIds = [];
-        _history = [];
+        DetachTurnViews();
+        _conv = new Conversation { Binding = _conv.Binding };
         ChatList.Children.Clear();
         if (_showingHistory) ExitHistoryPage(); else UpdateEmptyState();
+        UpdateSendUi();
     }
 
     private void OnMinimizeClick(object sender, RoutedEventArgs e) => _docker.Collapse();
@@ -941,7 +1128,7 @@ public partial class MainPanel : Window
         });
 
         var conversations = AllConversations()
-            .Where(c => SameBinding((string?)c.doc["binding"], _boundBinding))
+            .Where(c => SameBinding((string?)c.doc["binding"], _conv.Binding))
             .ToArray();
         if (conversations.Length == 0)
         {
@@ -984,7 +1171,7 @@ public partial class MainPanel : Window
             openContent.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             openContent.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             openContent.Children.Add(labels);
-            if (_convId == id)
+            if (_conv.ConvId == id)
             {
                 var current = new Border
                 {
@@ -1015,15 +1202,27 @@ public partial class MainPanel : Window
             };
             open.Click += (_, _) =>
             {
-                if (_sending) _cts?.Cancel();
+                CrossfadeConversationArea();
                 SaveConversation();
-                try
+                DetachTurnViews();
+                if (_turn is not null && _turn.Conv.ConvId == id)
                 {
-                    var selected = JsonNode.Parse(File.ReadAllText(Path.Combine(ConvDir, id + ".json")))!.AsObject();
-                    _boundBinding = NormalizeStoredBinding((string?)selected["binding"]);
-                    LoadConversationDoc(id, selected);
+                    // 打开的是运行中任务的会话：复用在途状态。
+                    _conv = _turn.Conv;
+                    RenderHistory();
+                    AttachTurnViews();
                 }
-                catch { }
+                else
+                {
+                    try
+                    {
+                        var selected = JsonNode.Parse(File.ReadAllText(Path.Combine(ConvDir, id + ".json")))!.AsObject();
+                        _conv = new Conversation { Binding = NormalizeStoredBinding((string?)selected["binding"]) };
+                        LoadConversationDoc(id, selected);
+                    }
+                    catch { }
+                }
+                UpdateSendUi();
                 ExitHistoryPage();
             };
 
@@ -1042,15 +1241,15 @@ public partial class MainPanel : Window
             delete.Click += (_, _) =>
             {
                 try { File.Delete(Path.Combine(ConvDir, id + ".json")); } catch { }
-                if (_convId == id)
+                if (_turn?.Conv.ConvId == id) _cts?.Cancel();   // 会话被删，任务一并停止
+                if (_conv.ConvId == id)
                 {
-                    if (_sending) _cts?.Cancel();
-                    _convId = null;
-                    _cliBackend.SessionIds = [];
-                    _history = [];
+                    DetachTurnViews();
+                    _conv = new Conversation { Binding = _conv.Binding };
                     ChatList.Children.Clear();
                 }
                 PopulateHistoryList();
+                UpdateSendUi();
             };
 
             var row = new Grid();
@@ -1165,7 +1364,7 @@ public partial class MainPanel : Window
     private void UpdateEmptyState()
     {
         RemoveEmptyState();
-        if (!_showingHistory && _history.Count == 0 && ChatList.Children.Count == 0)
+        if (!_showingHistory && _conv.History.Count == 0 && ChatList.Children.Count == 0)
         {
             var logo = new System.Windows.Controls.Image
             {
@@ -1260,7 +1459,10 @@ public partial class MainPanel : Window
         InputBox.Clear();
         RemoveEmptyState();
         AppendBubble(text, isUser: true, taskId: taskId);
-        var hist = _history;   // 捕获当前会话：期间切换绑定则丢弃在途回复（对齐 mac）
+        // 捕获会话与工作目录快照：此后面板显示切到哪个绑定都不影响本任务，
+        // 任务的输出与落盘始终归属它启动时的会话。
+        var conv = _conv;
+        var workRoot = _context?.FolderPath;
         var selectedFiles = _attached.ToArray();
 
         var pureConversation = IsPureConversation(text);
@@ -1274,7 +1476,7 @@ public partial class MainPanel : Window
             .Where(s => !string.IsNullOrWhiteSpace(s)));
         if (contextBlock.Length == 0) contextBlock = null;
         var apiText = contextBlock is null ? text : contextBlock + "\n\n---\n\n" + text;
-        hist.Add(new JsonObject
+        conv.History.Add(new JsonObject
         {
             ["role"] = "user", ["content"] = apiText, ["taskId"] = taskId
         });
@@ -1283,8 +1485,8 @@ public partial class MainPanel : Window
             DeepSeekCapabilityNotice(text, _attached) is { } capabilityNotice)
         {
             AppendBubble(capabilityNotice, isUser: false);
-            hist.Add(new JsonObject { ["role"] = "assistant", ["content"] = capabilityNotice });
-            SaveConversation();
+            conv.History.Add(new JsonObject { ["role"] = "assistant", ["content"] = capabilityNotice });
+            SaveConversation(conv);
             return;
         }
 
@@ -1292,29 +1494,28 @@ public partial class MainPanel : Window
         {
             var answer = LocalConversationReply(text);
             AppendBubble(answer, isUser: false);
-            hist.Add(new JsonObject { ["role"] = "assistant", ["content"] = answer });
-            SaveConversation();
+            conv.History.Add(new JsonObject { ["role"] = "assistant", ["content"] = answer });
+            SaveConversation(conv);
             return;
         }
 
-        SelectableText? replyRef = null;
-        var typing = new SelectableText
+        var turn = new RunningTurn { Conv = conv, WorkRoot = workRoot };
+        _turn = turn;
+        _turnTypingView = new SelectableText
         {
             Text = L10n.T("思考中…", "Thinking…"),
             Foreground = System.Windows.Media.Brushes.Gray,
             FontSize = 11, Margin = new Thickness(4, 2, 0, 6)
         };
-        ChatList.Children.Add(typing);
+        ChatList.Children.Add(_turnTypingView);
         ChatScroll.ScrollToBottom();
         SetSending(true);
         var stopwatch = Stopwatch.StartNew();
-        var stage = L10n.T("识别任务…", "Identifying task…");
+        turn.Stage = L10n.T("识别任务…", "Identifying task…");
         void UpdateStatus()
         {
-            var seconds = (int)stopwatch.Elapsed.TotalSeconds;
-            typing.Text = seconds >= 30
-                ? L10n.T($"{stage} · {seconds} 秒 · 任务仍在正常运行", $"{stage} · {seconds}s · still running normally")
-                : L10n.T($"{stage} · {seconds} 秒", $"{stage} · {seconds}s");
+            turn.ElapsedSeconds = (int)stopwatch.Elapsed.TotalSeconds;
+            UpdateTurnStatusText();
         }
         var statusTimer = new System.Windows.Threading.DispatcherTimer
         {
@@ -1323,20 +1524,9 @@ public partial class MainPanel : Window
         statusTimer.Tick += (_, _) => UpdateStatus();
         statusTimer.Start();
         UpdateStatus();
-        SelectableText Reply()
-        {
-            if (replyRef is null)
-            {
-                replyRef = AppendBubble("", isUser: false);
-                // 活动行保持在气泡下方（多轮工具期间持续可见，对齐 mac loading-row）
-                ChatList.Children.Remove(typing);
-                ChatList.Children.Add(typing);
-            }
-            return replyRef;
-        }
         var systemPrompt =
             $"""
-            你是嵌在 Windows 资源管理器旁的文件与编码助手。工作方式类似 Claude Code：用户当前打开的文件夹就是你的工作目录：{_context?.FolderPath ?? "（当前未绑定文件夹，文件工具不可用）"}。
+            你是嵌在 Windows 资源管理器旁的文件与编码助手。工作方式类似 Claude Code：用户当前打开的文件夹就是你的工作目录：{workRoot ?? "（当前未绑定文件夹，文件工具不可用）"}。
             始终使用与用户消息相同的语言回复（Always respond in the same language the user writes in）。
 
             你的工具（路径一律相对于工作目录）：
@@ -1374,19 +1564,17 @@ public partial class MainPanel : Window
         _cts = new CancellationTokenSource();
         try
         {
-            if (!pureConversation)
             {
-                stage = L10n.T("匹配内置技能…", "Matching a built-in skill…");
+                turn.Stage = L10n.T("匹配内置技能…", "Matching a built-in skill…");
                 UpdateStatus();
                 var dispatchArgs = new List<string> { "--request", text, "--files" };
                 dispatchArgs.AddRange(selectedFiles);
                 var dispatchOutput = await _skills.RunAsync(
                     "local-dispatch", dispatchArgs.ToArray(),
-                    _context?.FolderPath ?? Environment.CurrentDirectory, _cts.Token);
-                if (!ReferenceEquals(hist, _history)) return;
+                    workRoot ?? Environment.CurrentDirectory, _cts.Token);
                 if (ParseLocalDispatch(dispatchOutput) is { } local && (bool?)local["matched"] == true)
                 {
-                    stage = (string?)local["stage"] ?? L10n.T("本地处理…", "Processing locally…");
+                    turn.Stage = (string?)local["stage"] ?? L10n.T("本地处理…", "Processing locally…");
                     UpdateStatus();
                     var outputs = (local["outputs"] as JsonArray)?
                         .Select(n => (string?)n)
@@ -1412,11 +1600,11 @@ public partial class MainPanel : Window
                         reply = L10n.T($"内置技能未完成：{(string.IsNullOrEmpty(detail) ? "未知错误" : detail)}",
                                       $"The built-in skill did not complete: {(string.IsNullOrEmpty(detail) ? "unknown error" : detail)}");
                     }
-                    Reply().Text = reply;
-                    hist.Add(new JsonObject { ["role"] = "assistant", ["content"] = reply });
+                    SetTurnReply(turn, reply);
+                    conv.History.Add(new JsonObject { ["role"] = "assistant", ["content"] = reply });
                     if (_settings.Backend != "BuiltinApi")
-                        _cliBackend.SessionIds.Remove(_settings.Backend);
-                    if (ReferenceEquals(hist, _history)) SaveConversation();
+                        conv.Sessions.Remove(_settings.Backend);
+                    SaveConversation(conv);
                     return;
                 }
             }
@@ -1445,61 +1633,55 @@ public partial class MainPanel : Window
                     "不要把计划、准备步骤或我先做什么当作最终回复；必须实际完成任务并验证最终文件后再结束，无法完成时明确说明失败原因。\n\n" +
                     $"任务编号：{taskId}\n用户请求：\n" + apiText;
                 var completedSessionId = await _cliBackend.RunAsync(
-                    kind, cli, cliPrompt, _context?.FolderPath ?? Environment.CurrentDirectory,
+                    kind, cli, cliPrompt, workRoot ?? Environment.CurrentDirectory,
                     yolo: _settings.ApprovalMode == "yolo",
-                    onDelta: d => Dispatcher.Invoke(() =>
-                    {
-                        if (ReferenceEquals(hist, _history)) Reply().Text += d;
-                    }),
+                    sessions: conv.Sessions,
+                    onDelta: d => Dispatcher.Invoke(() => AppendTurnReply(turn, d)),
                     onActivity: a => Dispatcher.Invoke(() =>
                     {
-                        if (!ReferenceEquals(hist, _history)) return;
-                        stage = a;
+                        turn.Stage = a;
                         UpdateStatus();
-                        if (!ChatList.Children.Contains(typing)) ChatList.Children.Add(typing);
-                        ChatScroll.ScrollToBottom();
+                        if (ViewingTurn && _turnTypingView is not null &&
+                            !ChatList.Children.Contains(_turnTypingView))
+                            ChatList.Children.Add(_turnTypingView);
+                        if (ViewingTurn) ChatScroll.ScrollToBottom();
                     }),
                     _cts.Token);
-                if (!ReferenceEquals(hist, _history)) return;
                 if (!string.IsNullOrWhiteSpace(completedSessionId))
-                    _cliBackend.SessionIds[kind.ToString()] = completedSessionId;
-                hist.Add(new JsonObject { ["role"] = "assistant", ["content"] = Reply().Text });
-                SaveConversation();
+                    conv.Sessions[kind.ToString()] = completedSessionId;
+                conv.History.Add(new JsonObject { ["role"] = "assistant", ["content"] = turn.Reply.ToString() });
+                SaveConversation(conv);
                 return;
             }
-            await _agent.CompactIfNeededAsync(hist, _cts.Token);
-            if (!ReferenceEquals(hist, _history)) return;
+            await _agent.CompactIfNeededAsync(conv.History, _cts.Token);
             await _agent.RunAsync(
-                hist, systemPrompt,
-                onDelta: d => Dispatcher.Invoke(() =>
-                {
-                    if (ReferenceEquals(hist, _history)) Reply().Text += d;
-                }),
+                conv.History, systemPrompt,
+                onDelta: d => Dispatcher.Invoke(() => AppendTurnReply(turn, d)),
                 onActivity: a => Dispatcher.Invoke(() =>
                 {
-                    if (!ReferenceEquals(hist, _history)) return;
-                    stage = a;
+                    turn.Stage = a;
                     UpdateStatus();
-                    if (!ChatList.Children.Contains(typing)) ChatList.Children.Add(typing);
-                    ChatScroll.ScrollToBottom();
+                    if (ViewingTurn && _turnTypingView is not null &&
+                        !ChatList.Children.Contains(_turnTypingView))
+                        ChatList.Children.Add(_turnTypingView);
+                    if (ViewingTurn) ChatScroll.ScrollToBottom();
                 }),
                 _cts.Token,
                 allowTools: !pureConversation,
                 taskId: taskId);
-            if (!ReferenceEquals(hist, _history)) return;
-            var finalText = replyRef?.Text ?? "";
+            var finalText = turn.Reply.ToString();
             if (string.IsNullOrWhiteSpace(finalText))
             {
                 finalText = L10n.T("处理已完成。", "Done.");
-                Reply().Text = finalText;
+                SetTurnReply(turn, finalText);
             }
-            hist.Add(new JsonObject { ["role"] = "assistant", ["content"] = finalText });
-            SaveConversation();
-            if (finalText.Contains("```create-file:") && replyRef is not null)
+            conv.History.Add(new JsonObject { ["role"] = "assistant", ["content"] = finalText });
+            SaveConversation(conv);
+            if (finalText.Contains("```create-file:") && ViewingTurn && _turnReplyView is not null)
             {
                 for (var k = ChatList.Children.Count - 1; k >= 0; k--)
                 {
-                    if (ChatList.Children[k] is Border b && ReferenceEquals(b.Child, replyRef))
+                    if (ChatList.Children[k] is Border b && ReferenceEquals(b.Child, _turnReplyView))
                     { ChatList.Children.RemoveAt(k); break; }
                 }
                 RenderAssistantMessage(finalText);
@@ -1507,20 +1689,23 @@ public partial class MainPanel : Window
         }
         catch (Exception ex)
         {
-            if (ReferenceEquals(hist, _history))
-            {
-                if (ex is OperationCanceledException)
-                    Reply().Text += L10n.T("\n（已停止）", "\n(stopped)");
-                else
-                    Reply().Text += $"\n\u274c {ex.Message}";
-            }
+            var marker = ex is OperationCanceledException
+                ? L10n.T("\n（已停止）", "\n(stopped)")
+                : "\n❌ " + ex.Message;
+            AppendTurnReply(turn, marker);
+            // 后台被停止/失败同样落盘：切回该会话时能看到结果与原因。
+            conv.History.Add(new JsonObject { ["role"] = "assistant", ["content"] = turn.Reply.ToString() });
+            SaveConversation(conv);
         }
         finally
         {
             statusTimer.Stop();
-            ChatList.Children.Remove(typing);
+            if (_turnTypingView is not null) ChatList.Children.Remove(_turnTypingView);
+            if (turn.PendingApprovalCard is { } card) ChatList.Children.Remove(card);
+            _turn = null;
+            DetachTurnViews();
             SetSending(false);
-            ChatScroll.ScrollToBottom();
+            if (ReferenceEquals(conv, _conv)) ChatScroll.ScrollToBottom();
         }
     }
 
