@@ -52,6 +52,36 @@ class SharedDispatchCaseTests(unittest.TestCase):
 
 
 class RecorderTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "real AppleScript smoke test requires macOS")
+    def test_real_window_script_executes_when_finder_is_available(self):
+        finder = subprocess.run(["pgrep", "-x", "Finder"], capture_output=True)
+        if finder.returncode != 0:
+            self.skipTest("Finder process is not available")
+        runner = load_module(
+            "folderis_macos_qa_window_script_test",
+            FIXTURES / "run_qa_macos.py",
+        )
+        result = subprocess.run(
+            ["osascript", "-e", runner.WINDOW_SCRIPT],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = parse_named_window_rects(result.stdout)
+        self.assertTrue(all(name in {"Finder", "Folderis"} for name, _ in parsed))
+
+    def test_help_describes_strict_gap_free_recording_area(self):
+        result = subprocess.run(
+            [sys.executable, str(FIXTURES / "run_qa_macos.py"), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "strictly gap-free Finder + Folderis area",
+            " ".join(result.stdout.split()),
+        )
+
     def test_crop_is_gap_free_union_of_exact_docked_pair(self):
         windows = parse_named_window_rects(
             "Finder\t100\t50\t900\t700\n"

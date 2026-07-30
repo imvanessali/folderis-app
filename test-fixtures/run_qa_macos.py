@@ -42,14 +42,14 @@ DEFAULT_WORK = Path.home() / "Downloads" / "Test Folderis"
 DEFAULT_EVIDENCE = Path.home() / "Downloads" / "Folderis QA Evidence"
 WINDOW_SCRIPT = r'''
 tell application "System Events"
-  set rows to {}
+  set windowLines to {}
   if exists process "Finder" then
     tell process "Finder"
       repeat with w in windows
         if not (value of attribute "AXMinimized" of w) then
           set p to position of w
           set s to size of w
-          set end of rows to "Finder" & tab & (item 1 of p) & tab & (item 2 of p) & tab & (item 1 of s) & tab & (item 2 of s)
+          set end of windowLines to "Finder" & tab & (item 1 of p) & tab & (item 2 of p) & tab & (item 1 of s) & tab & (item 2 of s)
         end if
       end repeat
     end tell
@@ -60,13 +60,13 @@ tell application "System Events"
         if not (value of attribute "AXMinimized" of w) then
           set p to position of w
           set s to size of w
-          set end of rows to "Folderis" & tab & (item 1 of p) & tab & (item 2 of p) & tab & (item 1 of s) & tab & (item 2 of s)
+          set end of windowLines to "Folderis" & tab & (item 1 of p) & tab & (item 2 of p) & tab & (item 1 of s) & tab & (item 2 of s)
         end if
       end repeat
     end tell
   end if
   set AppleScript's text item delimiters to linefeed
-  return rows as text
+  return windowLines as text
 end tell
 '''
 
@@ -185,7 +185,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skills", type=Path, help="explicit skills.py (defaults to runtime or source)")
     parser.add_argument("--python", type=Path, help="explicit Python executable")
     parser.add_argument("--report", type=Path, default=DEFAULT_EVIDENCE / "qa-macos-results.json")
-    parser.add_argument("--record-screen", action="store_true", help="record only the Finder + Folderis bounding region")
+    parser.add_argument(
+        "--record-screen",
+        action="store_true",
+        help="record only one strictly gap-free Finder + Folderis area (extra or separated windows fail)",
+    )
     parser.add_argument("--recording-output", type=Path, default=DEFAULT_EVIDENCE / "folderis-qa-evidence.mp4")
     parser.add_argument("--overwrite-evidence", action="store_true")
     parser.add_argument("--skip-cancellation", action="store_true", help="diagnostic escape hatch; not a complete QA round")
