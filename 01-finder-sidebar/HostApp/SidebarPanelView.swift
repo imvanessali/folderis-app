@@ -22,11 +22,17 @@ struct SidebarPanelView: View {
             }
 
             if !tracker.accessibilityGranted {
-                PermissionHint(text: L("需要在 系统设置 → 隐私与安全性 → 辅助功能 中授权本 App，聊天面板才能贴靠并跟随 Finder 窗口。", "Grant access in System Settings → Privacy & Security → Accessibility so the panel can dock to Finder windows."))
+                PermissionHint(
+                    text: L("需要在 系统设置 → 隐私与安全性 → 辅助功能 中授权本 App，聊天面板才能贴靠并跟随 Finder 窗口。", "Grant access in System Settings → Privacy & Security → Accessibility so the panel can dock to Finder windows."),
+                    settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                )
                 Divider()
             }
             if finderContext.automationDenied {
-                PermissionHint(text: L("需要在 系统设置 → 隐私与安全性 → 自动化 中允许本 App 控制 Finder，才能读取当前文件夹和选中文件。", "Allow this app to control Finder in System Settings → Privacy & Security → Automation to read the current folder and selection."))
+                PermissionHint(
+                    text: L("需要在 系统设置 → 隐私与安全性 → 自动化 中允许本 App 控制 Finder，才能读取当前文件夹和选中文件。", "Allow this app to control Finder in System Settings → Privacy & Security → Automation to read the current folder and selection."),
+                    settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+                )
                 Divider()
             }
 
@@ -323,11 +329,26 @@ private struct CapsuleTextButton: View {
 
 private struct PermissionHint: View {
     let text: String
+    /// x-apple.systempreferences 深链接：点按钮直达对应的系统设置开关页。
+    let settingsURL: String
 
     var body: some View {
-        Text(text)
-            .font(.caption)
-            .foregroundStyle(.orange)
-            .padding(8)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Button {
+                if let url = URL(string: settingsURL) {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                Label(L("打开设置", "Open Settings"), systemImage: "arrow.up.forward.app")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
     }
 }
