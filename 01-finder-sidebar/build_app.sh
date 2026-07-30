@@ -58,6 +58,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP_BUNDLE"
+# 有 Developer ID 证书就用它签：TCC（辅助功能/自动化）按 bundle id + 签名
+# 记授权，与正式版同证书签名可复用已有授权，重建也不用重新勾选。
+DEV_IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/' || true)
+codesign --force --deep --sign "${DEV_IDENTITY:--}" "$APP_BUNDLE"
 
 echo "Built $APP_BUNDLE"
