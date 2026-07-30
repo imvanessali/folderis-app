@@ -61,6 +61,65 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var boundSelection: [URL] = []
     /// Convenience projection for single regular-file UI and legacy keys.
     @Published private(set) var boundFile: URL?
+    /// 当前绑定的会话目录 key。绑定建立时按文件身份（设备号+inode）算好并缓存：
+    /// 目标随后被重命名/移动，目录也不变，历史不丢。
+    private var boundKey = "global"
+
+    // MARK: 任务态与显示态解耦
+    // 面板显示永远跟随当前选中；任务在启动时捕获自己的会话身份与工作目录，
+    // 显示切走后输出写入后台缓冲，切回时恢复，完成后按捕获的身份落盘。
+
+    /// 任务启动时捕获的工作目录/选中集：任务执行期间显示切到别的绑定，
+    /// 工具与 CLI 仍作用于这里。
+    private var taskFolder: URL?
+    private var taskSelection: [URL] = []
+
+    /// 任务会话被显示切走后的暂存（身份 + 消息缓冲）；nil = 任务会话在前台。
+    struct DetachedRun {
+        var conversationID: UUID
+        var key: String
+        var folder: URL?
+        var selection: [URL]
+        var sessions: [String: String]
+        var messages: [ChatMessage]
+    }
+    @Published private(set) var detachedRun: DetachedRun?
+
+    /// 是否正在查看运行中任务所在的会话——停止按钮/忙碌行/审批卡只在此时显示。
+    var isViewingRunningTask: Bool { isSending && detachedRun == nil }
+
+    /// 任务侧消息读写入口：任务会话在前台写 messages，被切走写后台缓冲。
+    private var taskMessages: [ChatMessage] {
+        get { detachedRun?.messages ?? messages }
+        set {
+            if detachedRun != nil { detachedRun!.messages = newValue }
+            else { messages = newValue }
+        }
+    }
+
+    /// 任务侧 CLI 会话 id 读写入口（同上）。
+    private var taskSessions: [String: String] {
+        get { detachedRun?.sessions ?? backendSessionIDs }
+        set {
+            if detachedRun != nil { detachedRun!.sessions = newValue }
+            else { backendSessionIDs = newValue }
+        }
+    }
+
+    /// 任务侧错误报告：任务会话在前台走 errorMessage 横幅；在后台则记入
+    /// 会话正文，切回来能看到失败原因。
+    private func reportTaskError(_ text: String) {
+        if detachedRun == nil { errorMessage = text }
+        else { taskMessages.append(ChatMessage(role: .system, text: "❌ " + text)) }
+    }
+
+    /// 显示即将切走时，把正在前台的运行中任务会话挪进后台缓冲。
+    private func detachRunningTaskIfNeeded() {
+        guard isSending, detachedRun == nil else { return }
+        detachedRun = DetachedRun(conversationID: conversationID, key: boundKey,
+                                  folder: boundFolder, selection: boundSelection,
+                                  sessions: backendSessionIDs, messages: messages)
+    }
 
     /// A shell command the model wants to run, awaiting the user's decision.
     /// The agent loop is suspended on the continuation until approve/deny.
@@ -94,7 +153,7 @@ final class ChatViewModel: ObservableObject {
         activity = nil
         elapsedSeconds = 0
         subagents = []
-        saveHistory()
+        saveTaskHistory()
     }
 
     private let settings: AppSettings
@@ -146,7 +205,8 @@ final class ChatViewModel: ObservableObject {
     /// Starts a fresh conversation in the current folder (current one is
     /// already persisted incrementally).
     func newConversation() {
-        if isSending { cancelSending() }
+        // 对着运行中任务的会话新建 = 停止该任务；查看其他会话时任务不受影响。
+        if isViewingRunningTask { cancelSending() }
         saveHistory()
         conversationID = UUID()
         messages = []
@@ -160,13 +220,25 @@ final class ChatViewModel: ObservableObject {
             showHistory = false
             return
         }
-        if isSending { cancelSending() }
+        detachRunningTaskIfNeeded()
         saveHistory()
-        openConversation(id)
+        if let run = detachedRun, run.conversationID == id, run.key == boundKey {
+            // 切回运行中任务的会话：恢复在途状态（含未落盘的流式输出）。
+            conversationID = run.conversationID
+            backendSessionIDs = run.sessions
+            messages = run.messages
+            detachedRun = nil
+        } else {
+            openConversation(id)
+        }
         showHistory = false
     }
 
     func deleteConversation(_ id: UUID) {
+        if detachedRun?.conversationID == id || (isViewingRunningTask && id == conversationID) {
+            cancelSending()          // 会话被删，任务一并停止
+            detachedRun = nil
+        }
         try? FileManager.default.removeItem(at: conversationFileURL(id))
         refreshConversationList()
         if id == conversationID {
@@ -176,33 +248,39 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// Switches the conversation to the session bound to (folder, exact selection).
-    /// Cancels any in-flight reply first so a stream can't write into the
-    /// wrong session.
+    /// 显示永远跟随当前选中；运行中的任务已捕获自己的会话与工作目录，
+    /// 切换只影响显示、不打断任务，切回时恢复其在途输出。
     func switchTarget(folder: URL?, selection: [URL]) {
         let normalizedFolder = folder?.standardizedFileURL
         let normalizedSelection = Self.normalizeSelection(selection)
         let normalizedFile = Self.singleRegularFile(in: normalizedSelection)
-        // Finder can briefly report an empty/different selection while files are
-        // being created. Keep the active task bound to its original target; the
-        // next poll after completion will apply the latest Finder context.
-        guard !isSending else { return }
         guard normalizedFolder != boundFolder || normalizedSelection != boundSelection else {
             // Same target — but it may have been deleted out from under us.
             validateBoundTarget()
             return
         }
-        sendTask?.cancel()
-        terminateCLIProcess()
-        cancelPendingCommand()
-        isSending = false
-        subagents = []
-        persistOrPurgeCurrent()
+        detachRunningTaskIfNeeded()
+        // 旧绑定的历史一律保存保留：旧路径此刻不存在多半是刚被重命名
+        // （文件身份不变，同一目录会随新路径接回）；真删除留下的孤儿目录无害。
+        saveHistory()
         boundFolder = normalizedFolder
         boundSelection = normalizedSelection
         boundFile = normalizedFile
+        boundKey = Self.historyKey(folder: normalizedFolder, selection: normalizedSelection,
+                                   file: normalizedFile, token: Self.bindingToken, sortTokens: true)
         errorMessage = nil
         showHistory = false
-        loadFolder()
+        if let run = detachedRun, run.key == boundKey {
+            // 切回运行中任务绑定的会话：恢复在途状态（含未落盘的流式输出）。
+            conversationID = run.conversationID
+            backendSessionIDs = run.sessions
+            messages = run.messages
+            detachedRun = nil
+            refreshConversationList()
+            refreshCCSessionList()
+        } else {
+            loadFolder()
+        }
     }
 
     nonisolated private static func normalizeSelection(_ urls: [URL]) -> [URL] {
@@ -219,36 +297,21 @@ final class ChatViewModel: ObservableObject {
         return isDirectory.boolValue ? nil : url
     }
 
-    /// Conversations die with their binding target: if the bound file/folder
-    /// was deleted, remove its persisted conversations instead of letting
-    /// them carry over to whatever Finder shows next.
-    private func persistOrPurgeCurrent() {
-        let targets = boundSelection.isEmpty ? [boundFolder].compactMap { $0 } : boundSelection
-        guard !targets.isEmpty else {
-            saveHistory()
-            return
-        }
-        if targets.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) {
-            saveHistory()
-        } else {
-            try? FileManager.default.removeItem(at: folderDir)
-            messages = []
-        }
-    }
-
-    /// Called on every Finder poll tick; kills the session in place when the
-    /// file/folder it is bound to no longer exists.
+    /// Called on every Finder poll tick; detaches the session in place when the
+    /// file/folder it is bound to no longer exists at its old path. 历史文件
+    /// 一律保留在磁盘上：路径消失很可能只是重命名（文件身份不变，下次轮询
+    /// 会经由身份 key 自动接回同一份历史），删除会造成不可恢复的丢失。
     func validateBoundTarget() {
+        // 正在查看运行中任务的会话时不动绑定：路径变化很可能是任务自己的
+        // 重命名/生成，完成后的下一次轮询会应用最新的 Finder 上下文。
+        // 任务被切到后台时这里只影响显示，不再取消任务。
+        guard !isViewingRunningTask else { return }
         if !boundSelection.isEmpty,
            boundSelection.contains(where: { !FileManager.default.fileExists(atPath: $0.path) }) {
-            sendTask?.cancel()
-            terminateCLIProcess()
-            cancelPendingCommand()
-            isSending = false
-            subagents = []
-            try? FileManager.default.removeItem(at: folderDir)
             boundSelection = []
             boundFile = nil
+            boundKey = Self.historyKey(folder: boundFolder, selection: [], file: nil,
+                                       token: Self.bindingToken, sortTokens: true)
             messages = []
             errorMessage = nil
             loadFolder()
@@ -256,16 +319,11 @@ final class ChatViewModel: ObservableObject {
         }
         guard let folder = boundFolder,
               !FileManager.default.fileExists(atPath: folder.path) else { return }
-        sendTask?.cancel()
-        terminateCLIProcess()
-        cancelPendingCommand()
-        isSending = false
-        subagents = []
-        try? FileManager.default.removeItem(at: folderDir)
         messages = []
         boundFolder = nil
         boundSelection = []
         boundFile = nil
+        boundKey = "global"
         errorMessage = nil
         loadFolder()
     }
@@ -286,6 +344,8 @@ final class ChatViewModel: ObservableObject {
     /// Only reacts when the selection actually changes, so a chip the user
     /// removed by hand stays removed until they select something else.
     func syncSelection(_ urls: [URL]) {
+        // 显示跟随选中：任务执行中绑定与 chips 也照常切换（任务已捕获
+        // 自己的目录与会话，不受影响）。
         guard urls != lastSyncedSelection else { return }
         lastSyncedSelection = urls
         attachedFiles = urls
@@ -317,7 +377,7 @@ final class ChatViewModel: ObservableObject {
            !settings.provider.supportsVision,
            let notice = Self.deepSeekCapabilityNotice(request: text, files: files) {
             let fileContext = files.isEmpty ? nil :
-                "以下是用户选中/附上的文件：\n\n" + files.map { "文件 `\($0.path)`" }.joined(separator: "\n")
+                Self.attachmentScopeHeader + files.map { "文件 `\($0.path)`" }.joined(separator: "\n")
             let contextBlock = [fileContext, referencedTask].compactMap { $0 }.joined(separator: "\n\n")
             messages.append(ChatMessage(role: .user, taskID: taskID, text: text,
                                         promptContext: contextBlock.isEmpty ? nil : contextBlock))
@@ -333,6 +393,9 @@ final class ChatViewModel: ObservableObject {
         errorMessage = nil
         isSending = true
         elapsedSeconds = 0
+        // 捕获任务的工作目录与选中集：此后显示切到哪个绑定都不影响本任务。
+        taskFolder = boundFolder
+        taskSelection = boundSelection
 
         // CLI 后端（Claude Code 能自己读图）不做视觉降级。
         let allowImages = usesCLI || settings.provider.supportsVision
@@ -351,6 +414,9 @@ final class ChatViewModel: ObservableObject {
                 activity = nil
                 elapsedSeconds = 0
                 isSending = false
+                // 取消/错误提前 return 的路径也把在途内容按任务身份落盘。
+                saveTaskHistory()
+                detachedRun = nil
             }
 
             // File reading and image re-encoding can be slow (large photos),
@@ -362,19 +428,19 @@ final class ChatViewModel: ObservableObject {
             // 文件上下文只送给模型，不在气泡里复读（用户自己选的文件）。
             let fileContext: String? = prepared.descriptions.isEmpty
                 ? nil
-                : "以下是用户选中/附上的文件：\n\n" + prepared.descriptions.joined(separator: "\n\n")
+                : Self.attachmentScopeHeader + prepared.descriptions.joined(separator: "\n\n")
             let combinedContext = [fileContext, referencedTask].compactMap { $0 }.joined(separator: "\n\n")
 
             let userMessage = ChatMessage(
                 role: .user, taskID: taskID, text: text,
                 promptContext: combinedContext.isEmpty ? nil : combinedContext,
                 images: prepared.images)
-            messages.append(userMessage)
-            saveHistory()
+            taskMessages.append(userMessage)
+            saveTaskHistory()
 
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 activity = L("匹配内置技能…", "Matching a built-in skill…")
-                if let local = await Self.runLocalDispatch(request: text, files: files, cwd: boundFolder),
+                if let local = await Self.runLocalDispatch(request: text, files: files, cwd: taskFolder),
                    local.matched {
                     activity = local.stage ?? L("本地处理…", "Processing locally…")
                     let reply: String
@@ -391,9 +457,9 @@ final class ChatViewModel: ObservableObject {
                         reply = L("内置技能未完成：\(detail?.isEmpty == false ? detail! : "未知错误")",
                                   "The built-in skill did not complete: \(detail?.isEmpty == false ? detail! : "unknown error")")
                     }
-                    messages.append(ChatMessage(role: .assistant, text: reply))
-                    if usesCLI { backendSessionIDs[settings.backend.rawValue] = nil }
-                    saveHistory()
+                    taskMessages.append(ChatMessage(role: .assistant, text: reply))
+                    if usesCLI { taskSessions[settings.backend.rawValue] = nil }
+                    saveTaskHistory()
                     return
                 }
             }
@@ -405,7 +471,7 @@ final class ChatViewModel: ObservableObject {
                 } catch is CancellationError {
                     return
                 } catch {
-                    errorMessage = describe(error)
+                    reportTaskError(describe(error))
                 }
             } else {
                 // Auto-compact: summarize old turns when the conversation grows
@@ -418,25 +484,24 @@ final class ChatViewModel: ObservableObject {
                     // Compaction is best-effort; fall through with full history.
                 }
 
-                let history = messages
+                let history = taskMessages
 
                 do {
                     try await streamReply(history: history)
                 } catch is CancellationError {
-                    // Folder switched mid-stream; the session was already swapped.
                     return
                 } catch let error as URLError where error.code == .cancelled {
                     return
                 } catch {
-                    errorMessage = describe(error)
+                    reportTaskError(describe(error))
                 }
             }
             // Drop an assistant bubble that never received any content
             // (e.g. connection failed before the first token).
-            if let last = messages.last, last.role == .assistant, last.text.isEmpty {
-                messages.removeLast()
+            if let last = taskMessages.last, last.role == .assistant, last.text.isEmpty {
+                taskMessages.removeLast()
             }
-            saveHistory()
+            saveTaskHistory()
         }
     }
 
@@ -671,8 +736,15 @@ final class ChatViewModel: ObservableObject {
     var backendSessionIDs: [String: String] = [:]
     private var cliProcess: Process?
 
+    /// 附件上下文的统一开头：明确“选中/附上的文件 = 本次任务的全部输入范围”，
+    /// 防止模型以“任务未指定单张”为由扩大到同文件夹的其他文件。
+    nonisolated static let attachmentScopeHeader =
+        "以下是用户选中/附上的文件，它们就是本次任务的全部输入范围。" +
+        "任务描述没有点名对象时，对象就是这些文件，而不是所在文件夹；" +
+        "除非用户明确要求，绝不能把操作扩大到范围之外的其他文件，即使它们相似或适用同样的操作：\n\n"
+
     private static let cliScopePolicy = """
-    执行边界：严格按用户指定的文件、页码、数量和格式处理，不擅自扩大为全量或批量。只要求查看/回答内容时直接回复，不创建文件；只有明确要求保存/导出时才生成最终文件。凡是文件处理产物，默认保留原文件和每一次历史产物，并把本次结果另存为唯一的新文件；相同任务重复执行也必须生成 _2、_3 等新名称，用户指定输出名不等于允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖，只有用户明确说“覆盖原文件/原地修改”时才可覆盖。不得创建未要求的副本、拆分页、逐页图片或全量文本；必要中间文件必须放在操作系统临时目录（macOS 使用 /tmp 或 NSTemporaryDirectory，Windows 使用 %TEMP%），不得在用户文件夹内创建 tmp/output 等工作目录，并在结束前清理。范围歧义会导致不同产物时先简短询问。提取 PDF 文字必须逐页 OCR，且只 OCR 用户指定页码。不要把计划、准备步骤或“我先……”当作最终回复；必须实际完成任务并验证最终文件后再结束，无法完成时明确说明失败原因。
+    执行边界：严格按用户指定的文件、页码、数量和格式处理，不擅自扩大为全量或批量。用户消息中列出的选中/附上文件就是本次任务的全部输入范围：任务未点名对象时即以这些文件为对象，绝不能因为同文件夹其他文件相似或“批量处理更一致”而扩大到列表之外。只要求查看/回答内容时直接回复，不创建文件；只有明确要求保存/导出时才生成最终文件。凡是文件处理产物，默认保留原文件和每一次历史产物，并把本次结果另存为唯一的新文件；相同任务重复执行也必须生成 _2、_3 等新名称，用户指定输出名不等于允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖，只有用户明确说“覆盖原文件/原地修改”时才可覆盖。不得创建未要求的副本、拆分页、逐页图片或全量文本；必要中间文件必须放在操作系统临时目录（macOS 使用 /tmp 或 NSTemporaryDirectory，Windows 使用 %TEMP%），不得在用户文件夹内创建 tmp/output 等工作目录，并在结束前清理。范围歧义会导致不同产物时先简短询问。提取 PDF 文字必须逐页 OCR，且只 OCR 用户指定页码。不要把计划、准备步骤或“我先……”当作最终回复；必须实际完成任务并验证最终文件后再结束，无法完成时明确说明失败原因。
     """
 
     func runCLIBackendTurn(userMessage: ChatMessage) async throws {
@@ -681,7 +753,7 @@ final class ChatViewModel: ObservableObject {
 
         let prompt = Self.cliScopePolicy + "\n\n用户请求：\n" + Self.apiText(of: userMessage)
         let backend = settings.backend
-        let cwd = boundFolder ?? FileManager.default.homeDirectoryForCurrentUser
+        let cwd = taskFolder ?? FileManager.default.homeDirectoryForCurrentUser
 
         let cliPath: String?
         switch backend {
@@ -698,7 +770,7 @@ final class ChatViewModel: ObservableObject {
         let sessionKey = backend.rawValue
         if backend == .claudeCode {
             args = ["-p", prompt, "--output-format", "stream-json", "--verbose"]
-            if let sid = backendSessionIDs[sessionKey] {
+            if let sid = taskSessions[sessionKey] {
                 args += ["--resume", sid]
             }
             switch settings.approvalMode {
@@ -706,7 +778,7 @@ final class ChatViewModel: ObservableObject {
             default: args += ["--permission-mode", "acceptEdits"]
             }
         } else if backend == .codex {
-            if let sid = backendSessionIDs[sessionKey] {
+            if let sid = taskSessions[sessionKey] {
                 args = ["exec", "resume", sid, "--json"]
             } else {
                 args = ["exec", "--json"]
@@ -723,7 +795,7 @@ final class ChatViewModel: ObservableObject {
                 "--output-format", "stream-json",
                 "--stream-partial-output"
             ]
-            if let sid = backendSessionIDs[sessionKey] {
+            if let sid = taskSessions[sessionKey] {
                 args += ["--resume", sid]
             }
             // Cursor print mode only writes files when --force is enabled.
@@ -858,13 +930,13 @@ final class ChatViewModel: ObservableObject {
     private func handleCLIEvent(_ object: [String: Any], backend: BackendKind,
                                 sessionKey: String, bubbleID: UUID) {
         if let sid = object["session_id"] as? String {
-            backendSessionIDs[sessionKey] = sid
+            taskSessions[sessionKey] = sid
         }
         if backend == .claudeCode || backend == .cursor {
             switch object["type"] as? String {
             case "system":
                 if let sid = object["session_id"] as? String {
-                    backendSessionIDs[sessionKey] = sid
+                    taskSessions[sessionKey] = sid
                 }
             case "assistant":
                 // Cursor partial mode also emits buffered copies. Only these
@@ -886,22 +958,22 @@ final class ChatViewModel: ObservableObject {
                 }
             case "result":
                 if let sid = object["session_id"] as? String {
-                    backendSessionIDs[sessionKey] = sid
+                    taskSessions[sessionKey] = sid
                 }
                 if object["is_error"] as? Bool == true {
                     let raw = (object["result"] as? String) ?? L("未知错误", "unknown error")
                     if raw.lowercased().contains("authenticat") || raw.lowercased().contains("logged in") {
-                        errorMessage = backend == .cursor
+                        reportTaskError(backend == .cursor
                             ? L("Cursor 未登录：请打开终端运行 cursor-agent login，完成后重试", "Cursor is not signed in — run `cursor-agent login` in Terminal, then retry")
-                            : L("Claude Code 登录已过期：请打开终端运行 claude（会引导重新登录），完成后重试", "Claude Code login expired — run `claude` in Terminal to sign in again, then retry")
+                            : L("Claude Code 登录已过期：请打开终端运行 claude（会引导重新登录），完成后重试", "Claude Code login expired — run `claude` in Terminal to sign in again, then retry"))
                     } else {
-                        errorMessage = L("\(backend.displayName) 出错：\(raw.prefix(200))", "\(backend.displayName) error: \(raw.prefix(200))")
+                        reportTaskError(L("\(backend.displayName) 出错：\(raw.prefix(200))", "\(backend.displayName) error: \(raw.prefix(200))"))
                     }
                     return
                 }
                 // 兜底：全程没有 assistant 文本时用 result 字段
-                if let i = messages.firstIndex(where: { $0.id == bubbleID }),
-                   messages[i].text.isEmpty,
+                if let i = taskMessages.firstIndex(where: { $0.id == bubbleID }),
+                   taskMessages[i].text.isEmpty,
                    let result = object["result"] as? String {
                     appendToBubble(bubbleID, result)
                 }
@@ -919,7 +991,7 @@ final class ChatViewModel: ObservableObject {
             // Codex exec --json：宽容解析，覆盖版本差异。
             if let threadID = (object["thread_id"] as? String)
                 ?? ((object["thread"] as? [String: Any])?["id"] as? String) {
-                backendSessionIDs[sessionKey] = threadID
+                taskSessions[sessionKey] = threadID
             }
             if let item = object["item"] as? [String: Any] {
                 if item["type"] as? String == "agent_message", let text = item["text"] as? String {
@@ -932,8 +1004,8 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func textSeparatorIfNeeded(_ bubbleID: UUID) -> String {
-        guard let i = messages.firstIndex(where: { $0.id == bubbleID }) else { return "" }
-        return messages[i].text.isEmpty ? "" : "\n\n"
+        guard let i = taskMessages.firstIndex(where: { $0.id == bubbleID }) else { return "" }
+        return taskMessages[i].text.isEmpty ? "" : "\n\n"
     }
 
     // MARK: - 终端 Claude Code 会话的反向发现与导入（best-effort 只读）
@@ -1077,7 +1149,7 @@ final class ChatViewModel: ObservableObject {
             rounds += 1
             if rounds > 40 {
                 let label = taskID.map { L("任务 \($0)：", "Task \($0): ") } ?? ""
-                messages.append(ChatMessage(role: .system, text: label + L("工具调用达到 40 轮上限，已停止",
+                taskMessages.append(ChatMessage(role: .system, text: label + L("工具调用达到 40 轮上限，已停止",
                     "tool calls reached the 40-round limit and stopped")))
                 break
             }
@@ -1100,7 +1172,7 @@ final class ChatViewModel: ObservableObject {
     private static let recentToKeep = 6
 
     private func compactIfNeeded() async throws {
-        let conversation = messages.filter { $0.role != .system }
+        let conversation = taskMessages.filter { $0.role != .system }
         let totalChars = conversation.reduce(0) { $0 + $1.text.count }
         guard totalChars > Self.compactionCharBudget,
               conversation.count > Self.recentToKeep + 2,
@@ -1118,7 +1190,7 @@ final class ChatViewModel: ObservableObject {
         let summary = try await summarize(transcript: transcript)
         try Task.checkCancellation()
 
-        messages.insert(
+        taskMessages.insert(
             ChatMessage(role: .system, text: L("🗜️ 已压缩较早的对话以节省上下文", "🗜️ Earlier messages were compacted to save context")),
             at: 0
         )
@@ -1127,8 +1199,8 @@ final class ChatViewModel: ObservableObject {
         ]
         rebuilt.append(contentsOf: recent)
         // Preserve the compaction marker at the top, then summary + recent.
-        messages = [messages[0]] + rebuilt
-        saveHistory()
+        taskMessages = [taskMessages[0]] + rebuilt
+        saveTaskHistory()
     }
 
     /// One-shot, non-streaming completion used only for summarization.
@@ -1171,10 +1243,11 @@ final class ChatViewModel: ObservableObject {
     /// The panel behaves like a coding agent whose working directory is the
     /// Finder folder the user is looking at.
     private var systemPrompt: String {
-        let folderDesc = boundFolder?.path ?? "（当前未绑定文件夹，工具不可用）"
-        let selectionLine = boundSelection.isEmpty ? "" :
+        // 用任务捕获的目录/选中集：执行期间显示切走也不改变任务的作用范围。
+        let folderDesc = taskFolder?.path ?? "（当前未绑定文件夹，工具不可用）"
+        let selectionLine = taskSelection.isEmpty ? "" :
             "\n本对话精准绑定在用户当前选择的这些项目上（选择集合不可扩大或缩小）：\n" +
-            boundSelection.map(\.path).joined(separator: "\n")
+            taskSelection.map(\.path).joined(separator: "\n")
         return """
         你是嵌在 macOS 访达（Finder）窗口旁的文件与编码助手（当前驱动模型：\(settings.model)。历史消息可能由其他模型生成，被问到身份时以本行为准）。工作方式类似 Claude Code：用户当前打开的文件夹就是你的工作目录：\(folderDesc)。\(selectionLine)
 
@@ -1197,6 +1270,7 @@ final class ChatViewModel: ObservableObject {
 
         处理任务的方式：
         - 严格遵守用户指定的对象、页码、数量和输出格式，只做完成请求必需的操作；用户只问一页就只处理该页，绝不能擅自扩展为整个文件或所有页面。
+        - 用户消息中列出的“选中/附上的文件”就是本次任务的全部输入范围：任务描述没有点名对象时，对象就是这些文件，而不是所在文件夹；绝不能因为文件夹里其他文件相似、或“批量处理更一致”而扩大到列表之外。
         - 用户只要求查看、读取、分析或回答内容时，直接在聊天中返回结果，不创建文件。只有用户明确说保存、导出或生成文件时才创建对应的最终文件。
         - 使用 run_skill 生成产物时，默认保留原文件和每一次历史产物，本次结果必须使用唯一的新文件名；相同任务重复执行要自动使用 _2、_3 等名称，即使用户指定 --output 也不代表允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖；只有用户明确要求“覆盖原文件/原地修改”时，才可传 --overwrite-original，涉及 --in-place 时必须同时传两者。禁止把 --output 指向输入文件。
         - 不创建用户没要求的副本、拆分页、逐页图片、全量文本或其他衍生物。工具确需中间文件时只能放系统临时目录，并在结束前清理。
@@ -1358,22 +1432,22 @@ final class ChatViewModel: ObservableObject {
 
     private func startBubble() -> UUID {
         let bubble = ChatMessage(role: .assistant, text: "", isStreaming: true)
-        messages.append(bubble)
+        taskMessages.append(bubble)
         return bubble.id
     }
 
     private func appendToBubble(_ id: UUID, _ text: String) {
-        guard let i = messages.firstIndex(where: { $0.id == id }) else { return }
-        messages[i].text += text
+        guard let i = taskMessages.firstIndex(where: { $0.id == id }) else { return }
+        taskMessages[i].text += text
     }
 
     /// Ends a streaming bubble; removes it entirely if it never got text
     /// (e.g. a round that only called tools).
     private func finishBubble(_ id: UUID) {
-        guard let i = messages.firstIndex(where: { $0.id == id }) else { return }
-        messages[i].isStreaming = false
-        if messages[i].text.isEmpty {
-            messages.remove(at: i)
+        guard let i = taskMessages.firstIndex(where: { $0.id == id }) else { return }
+        taskMessages[i].isStreaming = false
+        if taskMessages[i].text.isEmpty {
+            taskMessages.remove(at: i)
         }
     }
 
@@ -1731,7 +1805,7 @@ final class ChatViewModel: ObservableObject {
     /// Resolves a tool-supplied relative path, refusing anything that
     /// escapes the bound folder.
     private func resolveInFolder(_ relative: String) -> URL? {
-        guard let folder = boundFolder else { return nil }
+        guard let folder = taskFolder else { return nil }
         let target = folder.appendingPathComponent(relative).standardizedFileURL
         let root = folder.standardizedFileURL.path
         guard target.path == root || target.path.hasPrefix(root + "/") else { return nil }
@@ -1739,7 +1813,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func executeTool(name: String, input: [String: Any]) async -> String {
-        guard let folder = boundFolder else { return "错误：当前未绑定文件夹，无法使用文件工具" }
+        guard let folder = taskFolder else { return "错误：当前未绑定文件夹，无法使用文件工具" }
         let path = (input["path"] as? String) ?? ""
 
         if name == "run_command" {
@@ -1973,7 +2047,7 @@ final class ChatViewModel: ObservableObject {
     /// final text. Non-streaming: subagent chatter doesn't clutter the panel;
     /// only its start/finish and its own tool activity are surfaced.
     private func runSubagent(task: String) async throws -> String {
-        guard let folder = boundFolder else { return "错误：未绑定文件夹" }
+        guard let folder = taskFolder else { return "错误：未绑定文件夹" }
         let subSystem = """
         你是一个子代理，工作目录：\(folder.path)。独立完成下面这个任务，可以使用文件工具（浏览、搜索、读、精确编辑、写、移动、复制、建目录）。完成后用简洁的中文给出结论和你做过的关键操作——这段结论会返回给主代理，所以要自包含。
         """
@@ -2443,14 +2517,37 @@ final class ChatViewModel: ObservableObject {
         return nil
     }
 
-    private var folderKey: String {
+    /// 文件身份 token：设备号 + inode，重命名/同卷移动后保持不变；
+    /// 取不到时（如目标暂不可达的网络卷）退回绝对路径。
+    nonisolated private static func bindingToken(_ url: URL) -> String {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        if let device = (attrs?[.systemNumber] as? NSNumber)?.uint64Value,
+           let inode = (attrs?[.systemFileNumber] as? NSNumber)?.uint64Value {
+            return "id:\(device)-\(inode)"
+        }
+        return url.path
+    }
+
+    /// 会话目录 key：对绑定目标逐项取 token 后哈希。token 传
+    /// `bindingToken`（身份，正常路径）或 `{ $0.path }`（旧版路径 key，
+    /// 仅用于存量迁移）。
+    /// sortTokens: 身份 key 必须传 true——多选的 token 按自身排序后哈希，
+    /// 与路径字典序解耦（重命名改变选中项排序也不换 key）。旧版路径 key
+    /// 按 boundSelection 原有次序串接，legacy 迁移计算时保持 false 以复现旧算法。
+    nonisolated private static func historyKey(
+        folder: URL?, selection: [URL], file: URL?,
+        token: (URL) -> String,
+        sortTokens: Bool = false
+    ) -> String {
         let basis: String
-        if boundSelection.count == 1, let file = boundFile {
-            basis = "file:" + file.path
-        } else if !boundSelection.isEmpty {
-            basis = "selection:" + boundSelection.map(\.path).joined(separator: "\n")
-        } else if let folder = boundFolder {
-            basis = folder.path
+        if selection.count == 1, let file {
+            basis = "file:" + token(file)
+        } else if !selection.isEmpty {
+            var tokens = selection.map(token)
+            if sortTokens { tokens.sort() }
+            basis = "selection:" + tokens.joined(separator: "\n")
+        } else if let folder {
+            basis = token(folder)
         } else {
             return "global"
         }
@@ -2459,8 +2556,9 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// Directory holding all conversations of the current folder.
+    /// Key 在绑定建立时算好并缓存在 boundKey：目标随后被重命名也不换目录。
     private var folderDir: URL {
-        Self.historyDir.appendingPathComponent(folderKey, isDirectory: true)
+        Self.historyDir.appendingPathComponent(boundKey, isDirectory: true)
     }
 
     private func conversationFileURL(_ id: UUID) -> URL {
@@ -2470,6 +2568,7 @@ final class ChatViewModel: ObservableObject {
     /// Loads the folder's conversation list and opens the most recent one
     /// (or starts fresh if the folder has none).
     private func loadFolder() {
+        migratePathKeyDirIfNeeded()
         try? FileManager.default.createDirectory(at: folderDir, withIntermediateDirectories: true)
         migrateLegacyHistoryIfNeeded()
         refreshConversationList()
@@ -2500,25 +2599,45 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func saveHistory() {
+        persistHistory(messages: messages, key: boundKey, id: conversationID,
+                       folder: boundFolder, selection: boundSelection,
+                       sessions: backendSessionIDs)
+    }
+
+    /// 任务侧落盘：任务会话被切到后台时按其捕获的身份写盘，前台时同 saveHistory。
+    private func saveTaskHistory() {
+        if let run = detachedRun {
+            persistHistory(messages: run.messages, key: run.key, id: run.conversationID,
+                           folder: run.folder, selection: run.selection,
+                           sessions: run.sessions)
+        } else {
+            saveHistory()
+        }
+    }
+
+    private func persistHistory(messages: [ChatMessage], key: String, id: UUID,
+                                folder: URL?, selection: [URL], sessions: [String: String]) {
+        let dir = Self.historyDir.appendingPathComponent(key, isDirectory: true)
+        let fileURL = dir.appendingPathComponent("\(id.uuidString).json")
         // An empty conversation isn't worth a file (also handles "清空对话").
         let meaningful = messages.contains { $0.role != .system }
         guard meaningful else {
-            try? FileManager.default.removeItem(at: conversationFileURL(conversationID))
+            try? FileManager.default.removeItem(at: fileURL)
             refreshConversationList()
             return
         }
         let payload = PersistedHistory(
-            folder: boundFolder?.path,
-            selection: boundSelection.isEmpty ? nil : boundSelection.map(\.path),
+            folder: folder?.path,
+            selection: selection.isEmpty ? nil : selection.map(\.path),
             title: Self.deriveTitle(from: messages),
             updatedAt: Date(),
-            backendSessions: backendSessionIDs.isEmpty ? nil : backendSessionIDs,
+            backendSessions: sessions.isEmpty ? nil : sessions,
             items: messages.map { .init(role: $0.role.rawValue, text: $0.text,
                                         promptContext: $0.promptContext, taskID: $0.taskID) }
         )
         guard let data = try? JSONEncoder().encode(payload) else { return }
-        try? FileManager.default.createDirectory(at: folderDir, withIntermediateDirectories: true)
-        try? data.write(to: conversationFileURL(conversationID), options: .atomic)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? data.write(to: fileURL, options: .atomic)
         refreshConversationList()
     }
 
@@ -2547,10 +2666,25 @@ final class ChatViewModel: ObservableObject {
         return line.count > 24 ? String(line.prefix(24)) + "…" : line
     }
 
+    /// 身份 key 启用前目录名按绝对路径哈希；首次访问时把旧目录整个搬到
+    /// 身份 key 目录下（目标还在原路径时两个 key 都能算出来）。
+    private func migratePathKeyDirIfNeeded() {
+        let dir = folderDir
+        guard !FileManager.default.fileExists(atPath: dir.path) else { return }
+        let legacyKey = Self.historyKey(folder: boundFolder, selection: boundSelection,
+                                        file: boundFile, token: { $0.path })
+        guard legacyKey != boundKey else { return }
+        let legacyDir = Self.historyDir.appendingPathComponent(legacyKey, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: legacyDir.path) else { return }
+        try? FileManager.default.moveItem(at: legacyDir, to: dir)
+    }
+
     /// Old scheme stored one flat file per folder; fold it into the new
     /// per-conversation directory once.
     private func migrateLegacyHistoryIfNeeded() {
-        let legacy = Self.historyDir.appendingPathComponent("\(folderKey).json")
+        let legacyKey = Self.historyKey(folder: boundFolder, selection: boundSelection,
+                                        file: boundFile, token: { $0.path })
+        let legacy = Self.historyDir.appendingPathComponent("\(legacyKey).json")
         guard FileManager.default.fileExists(atPath: legacy.path),
               let data = try? Data(contentsOf: legacy),
               let payload = try? JSONDecoder().decode(PersistedHistory.self, from: data) else { return }
@@ -2561,10 +2695,10 @@ final class ChatViewModel: ObservableObject {
             updatedAt: payload.updatedAt ?? Date(),
             items: payload.items
         )
-        if let out = try? JSONEncoder().encode(migrated) {
-            try? out.write(to: conversationFileURL(UUID()), options: .atomic)
+        if let out = try? JSONEncoder().encode(migrated),
+           (try? out.write(to: conversationFileURL(UUID()), options: .atomic)) != nil {
+            try? FileManager.default.removeItem(at: legacy)
         }
-        try? FileManager.default.removeItem(at: legacy)
     }
 }
 

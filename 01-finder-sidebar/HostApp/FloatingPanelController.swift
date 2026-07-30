@@ -16,6 +16,7 @@ private final class SidebarPanel: NSPanel {
 /// against the Finder window's right edge — just the brand icon and a ">"
 /// chevron; clicking anywhere on it re-opens the full panel.
 private struct CollapsedRailView: View {
+    @EnvironmentObject private var settings: AppSettings
     let onTap: () -> Void
 
     /// Rail width when the panel is collapsed.
@@ -47,12 +48,11 @@ private struct CollapsedRailView: View {
         .help(L("展开 Folderis", "Expand Folderis"))
     }
 
-    /// 品牌 logo（发布包内 OrbLogo.png）；开发构建无资源时退回符号样式。
+    /// 品牌 logo（设置页可换成 Clippy 或自定义图）；开发构建无资源时退回符号样式。
     private var iconFace: some View {
         ZStack {
             Circle().fill(Color(nsColor: .controlBackgroundColor))
-            if let url = Bundle.main.url(forResource: "OrbLogo", withExtension: "png"),
-               let logo = NSImage(contentsOf: url) {
+            if let logo = BrandLogo.image(choice: settings.logoChoice) {
                 Image(nsImage: logo)
                     .resizable()
                     .interpolation(.high)
@@ -133,6 +133,7 @@ final class FloatingPanelController: NSObject {
 
         railPanel.contentView = NSHostingView(
             rootView: CollapsedRailView(onTap: { [weak self] in self?.expand() })
+                .environmentObject(settings)
         )
 
         let content = SidebarPanelView(

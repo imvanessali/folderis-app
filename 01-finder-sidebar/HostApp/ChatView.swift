@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ChatView: View {
     @ObservedObject var chat: ChatViewModel
@@ -26,7 +27,8 @@ struct ChatView: View {
                                 MessageBubble(message: message, folder: chat.boundFolder)
                                     .id(message.id)
                             }
-                            if chat.isSending {
+                            // 忙碌行只出现在运行中任务所在的会话里。
+                            if chat.isViewingRunningTask {
                                 VStack(alignment: .leading, spacing: 5) {
                                     HStack(spacing: 6) {
                                         ProgressView().controlSize(.small)
@@ -63,7 +65,7 @@ struct ChatView: View {
                         .padding()
                     }
 
-                    if chat.messages.isEmpty && !chat.isSending {
+                    if chat.messages.isEmpty && !chat.isViewingRunningTask {
                         GeometryReader { geometry in
                             EmptyStateView(availableHeight: geometry.size.height)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,6 +73,19 @@ struct ChatView: View {
                     }
                 }
                 .clipped()
+                // 会话切换不硬切：旧内容先淡出露出白底，新内容再淡入（渐白过渡）。
+                .id(chat.conversationID)
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(.easeIn(duration: 0.16).delay(0.1)),
+                    removal: .opacity.animation(.easeOut(duration: 0.1))
+                ))
+                .animation(.default, value: chat.conversationID)
+                // .id 切换会重建滚动视图：新会话出现时直接定位到底部（最新消息）。
+                .onAppear {
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("chat-bottom", anchor: .bottom)
+                    }
+                }
                 .onChange(of: chat.messages.count) { _ in
                     DispatchQueue.main.async {
                         proxy.scrollTo("chat-bottom", anchor: .bottom)
@@ -93,7 +108,8 @@ struct ChatView: View {
             }
 
             // Claude Code 式命令确认卡：AI 请求执行 shell 命令时挂起等待。
-            if let pending = chat.pendingCommand {
+            // 只在查看任务会话时显示；切走时任务停在审批上，切回可继续决策。
+            if chat.isViewingRunningTask, let pending = chat.pendingCommand {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "terminal")
@@ -141,7 +157,10 @@ struct ChatView: View {
             // 苹果“信息”App 风格的聊天输入条：圆角胶囊 + 内嵌圆形发送按钮。
             // 回车发送，Option+回车换行。
             HStack(alignment: .center, spacing: 6) {
-                TextField(L("描述操作…", "Describe a task…"), text: $chat.draft, axis: .vertical)
+                TextField(chat.isSending && !chat.isViewingRunningTask
+                              ? L("另一个对话的任务进行中，完成后可发送…", "A task is running in another chat…")
+                              : L("描述操作…", "Describe a task…"),
+                          text: $chat.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .lineLimit(2...8)
@@ -149,17 +168,18 @@ struct ChatView: View {
                     .padding(.vertical, 12)
                     .onSubmit { chat.send() }
 
-                // 空闲时是发送按钮；agent 干活时变成停止按钮（对齐 Claude Code 的可中断性）。
+                // 空闲时是发送按钮；查看运行中任务的会话时变成停止按钮
+                // （对齐 Claude Code 的可中断性）。查看其他会话时禁用（单任务并发）。
                 Button {
-                    chat.isSending ? chat.cancelSending() : chat.send()
+                    chat.isViewingRunningTask ? chat.cancelSending() : chat.send()
                 } label: {
-                    Image(systemName: chat.isSending ? "stop.circle.fill" : "arrow.up.circle.fill")
+                    Image(systemName: chat.isViewingRunningTask ? "stop.circle.fill" : "arrow.up.circle.fill")
                         .font(.system(size: 25))
                         .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(chat.isSending || canSend ? Color.accentColor : Color.secondary.opacity(0.45))
+                        .foregroundStyle(chat.isViewingRunningTask || canSend ? Color.accentColor : Color.secondary.opacity(0.45))
                 }
                 .buttonStyle(.plain)
-                .disabled(!chat.isSending && !canSend)
+                .disabled(!chat.isViewingRunningTask && !canSend)
                 .padding(.trailing, 6)
             }
             .background(
@@ -253,28 +273,26 @@ private struct HistoryListView: View {
                             .padding(.bottom, 4)
 
                             ForEach(chat.ccSessionList) { session in
-                                Button {
-                                    chat.importCCSession(session)
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "terminal")
+                                // 与 HistoryRow 相同的可点击行布局：行内文字保持可选中，
+                                // 点击空白处导入会话。
+                                HStack(spacing: 8) {
+                                    Image(systemName: "terminal")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(session.title)
+                                            .font(.system(size: 13))
+                                            .lineLimit(1)
+                                        Text(Self.dateFormatter.localizedString(for: session.updatedAt, relativeTo: Date()))
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(session.title)
-                                                .font(.system(size: 13))
-                                                .lineLimit(1)
-                                            Text(Self.dateFormatter.localizedString(for: session.updatedAt, relativeTo: Date()))
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        Spacer()
                                     }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .contentShape(Rectangle())
+                                    Spacer()
                                 }
-                                .buttonStyle(.plain)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                                .onTapGesture { chat.importCCSession(session) }
                                 Divider().padding(.leading, 12)
                             }
                         }
@@ -364,16 +382,18 @@ private struct EmptyStateView: View {
 }
 
 private struct ChatBrandLogo: View {
+    @EnvironmentObject private var settings: AppSettings
     let size: CGFloat
 
     var body: some View {
         Group {
-            if let url = Bundle.main.url(forResource: "OrbLogoTransparent", withExtension: "png"),
-               let logo = NSImage(contentsOf: url) {
+            if let logo = BrandLogo.image(choice: settings.logoChoice, preferTransparent: true) {
                 Image(nsImage: logo)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
+                    // 自定义/Clippy 多为不透明方图，轻裁圆角；默认透明 orb 不受影响。
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous))
             } else {
                 Image(systemName: "sparkles")
                     .font(.system(size: size * 0.45, weight: .semibold))
@@ -408,10 +428,7 @@ private struct MessageBubble: View {
                 Spacer(minLength: 40)
                 VStack(alignment: .trailing, spacing: 3) {
                     if let taskID = message.taskID {
-                        Text(taskID)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                        TaskIDChip(taskID: taskID)
                     }
                     bubbleText(message.text)
                 }
@@ -435,6 +452,44 @@ private struct MessageBubble: View {
                     }
                 }
             }
+        }
+    }
+
+    /// 任务编号 chip：点击复制编号到剪贴板，并短暂提示如何引用该任务。
+    private struct TaskIDChip: View {
+        let taskID: String
+        @State private var copied = false
+        @State private var hideTask: Task<Void, Never>?
+
+        var body: some View {
+            HStack(spacing: 5) {
+                if copied {
+                    Text(L("已复制 · 在任意对话输入该编号即可引用此任务",
+                           "Copied — type it in any chat to reference this task"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
+                Text(taskID)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(taskID, forType: .string)
+                withAnimation { copied = true }
+                hideTask?.cancel()
+                hideTask = Task {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    guard !Task.isCancelled else { return }
+                    withAnimation { copied = false }
+                }
+            }
+            .onHover { inside in
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .help(L("点击复制任务编号", "Click to copy the task ID"))
         }
     }
 

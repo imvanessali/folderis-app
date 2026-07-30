@@ -207,8 +207,17 @@ final class FinderWindowTracker: ObservableObject {
     private static func isStandardWindow(_ element: AXUIElement) -> Bool {
         var subroleValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleValue) == .success,
-              let subrole = subroleValue as? String else { return false }
-        return subrole == kAXStandardWindowSubrole as String
+              let subrole = subroleValue as? String,
+              subrole == kAXStandardWindowSubrole as String else { return false }
+        // 「简介」(Info)、压缩/拷贝进度 (Progress)、访达设置 (FinderSettings)、
+        // 连接服务器 (_NS:…) 等辅助窗口的 subrole 也都是 AXStandardWindow，
+        // 面板不应停靠过去。靠 AXIdentifier 区分（与系统语言无关）：
+        // 只有浏览器窗口的 identifier 是 "FinderWindow"，严格按 allowlist 判定；
+        // identifier 缺失一律视为辅助窗口——宁可不出现，也不乱出现。
+        var identifierValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &identifierValue) == .success,
+              let identifier = identifierValue as? String else { return false }
+        return identifier == "FinderWindow"
     }
 
     private var frontWindowElement: AXUIElement?
@@ -258,14 +267,20 @@ final class FinderWindowTracker: ObservableObject {
 
     /// 不依赖辅助功能权限的粗判：当前空间是否有可见的 Finder 窗口。
     /// 供未授权时决定要不要停靠面板（避免点一下桌面面板就弹出来）。
+    /// CG 层拿不到窗口类型，只能按尺寸排除明显的辅助窗口：
+    /// 压缩/拷贝进度窗约 460×180、简介窗约 265 宽，都够不到浏览器窗口的
+    /// 最小尺寸（挤压布局本身就保证浏览器窗口 ≥ minFinderWidth 宽）。
     func finderHasOnScreenWindow() -> Bool {
         guard let pid = findFinderPID(),
               let cgList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
-        return cgList.contains {
-            ($0[kCGWindowOwnerPID as String] as? pid_t) == pid &&
-            ($0[kCGWindowLayer as String] as? Int) == 0
+        return cgList.contains { info in
+            guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                  (info[kCGWindowLayer as String] as? Int) == 0,
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return false }
+            return bounds.width >= 480 && bounds.height >= 300
         }
     }
 

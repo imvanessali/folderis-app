@@ -1,8 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
+    @State private var logoError: String?
     /// When embedded inline (floating panel), the host supplies the way back;
     /// falls back to SwiftUI dismiss when presented as a sheet/window.
     var onDone: (() -> Void)? = nil
@@ -44,6 +46,26 @@ struct SettingsView: View {
                          : L("CLI 后端映射：全自动 → 跳过其权限询问；其余 → 自动接受编辑、命令仍受其安全策略约束", "CLI backend mapping: Auto-allow all skips its permission prompts; other modes auto-accept edits while commands still follow its safety policy"))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
+                }
+
+                section(title: L("面板图标", "Panel Icon")) {
+                    VStack(spacing: 8) {
+                        ForEach(LogoChoice.allCases) { choice in
+                            logoRow(choice)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text(L("建议使用正方形图片；非正方形会自动居中裁剪，过大的图片会自动压缩。",
+                           "Square images work best; non-square images are center-cropped and oversized ones compressed automatically."))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+
+                    if let logoError {
+                        Text(logoError)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red)
+                    }
                 }
 
                 // 退出入口：菜单栏图标不好找，设置页兜底。
@@ -156,6 +178,80 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func logoRow(_ choice: LogoChoice) -> some View {
+        let selected = settings.logoChoice == choice
+        let hasCustomFile = FileManager.default.fileExists(atPath: BrandLogo.customLogoURL.path)
+        let selectable = choice != .custom || hasCustomFile
+        return HStack(spacing: 8) {
+            Button {
+                settings.logoChoice = choice
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                        .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    logoThumbnail(choice)
+                    Text(choice.displayName)
+                        .font(.system(size: 14))
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!selectable)
+            .opacity(selectable ? 1 : 0.55)
+
+            if choice == .custom {
+                Button {
+                    pickCustomImage()
+                } label: {
+                    Label(L("选择图片…", "Choose image…"), systemImage: "photo")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func logoThumbnail(_ choice: LogoChoice) -> some View {
+        if let image = BrandLogo.image(choice: choice) {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFill()
+                .frame(width: 22, height: 22)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor))
+                .frame(width: 22, height: 22)
+                .overlay(
+                    Image(systemName: choice == .custom ? "photo" : "sparkles")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                )
+        }
+    }
+
+    private func pickCustomImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = L("选择一张正方形图片作为面板图标", "Choose a square image for the panel icon")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try BrandLogo.importCustomImage(from: url)
+            logoError = nil
+            // 即使已是 .custom，重新赋值也会触发 didSet 广播刷新。
+            settings.logoChoice = .custom
+        } catch {
+            logoError = error.localizedDescription
+        }
     }
 
     private func apiKeyControls(showTitle: Bool = true) -> some View {

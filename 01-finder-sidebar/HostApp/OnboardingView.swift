@@ -471,12 +471,12 @@ private struct BrandLogoView: View {
 
     var body: some View {
         Group {
-            if let url = Bundle.main.url(forResource: "OrbLogoTransparent", withExtension: "png"),
-               let logo = NSImage(contentsOf: url) {
+            if let logo = BrandLogo.image(choice: BrandLogo.savedChoice, preferTransparent: true) {
                 Image(nsImage: logo)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous))
             } else {
                 Image(systemName: "sparkles")
                     .font(.system(size: size * 0.45, weight: .semibold))
