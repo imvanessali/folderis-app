@@ -5,8 +5,8 @@ namespace Sider;
 
 internal static class ProductInfo
 {
-    public const string Version = "1.1.720.1";
-    public const string Build = "20260720.1";
+    public const string Version = "1.1.729.2";
+    public const string Build = "20260729.2";
     public const string Name = "Folderis";
     public const string Edition = "Full";
     public const string MutexName = "Folderis.Sider.Full.Single";

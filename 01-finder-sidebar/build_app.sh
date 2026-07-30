@@ -18,6 +18,7 @@ cp "$BUILD_DIR/$BIN_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp branding/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 cp branding/OrbLogo.png "$APP_BUNDLE/Contents/Resources/OrbLogo.png"
 cp branding/OrbLogoTransparent.png "$APP_BUNDLE/Contents/Resources/OrbLogoTransparent.png"
+cp branding/ClippyLogo.png "$APP_BUNDLE/Contents/Resources/ClippyLogo.png"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

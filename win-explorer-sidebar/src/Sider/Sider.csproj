@@ -13,10 +13,10 @@
     <AssemblyName>Folderis</AssemblyName>
     <RootNamespace>Sider</RootNamespace>
     <ApplicationIcon>Assets/app.ico</ApplicationIcon>
-    <Version>1.1.723.1</Version>
+    <Version>1.1.729.2</Version>
     <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.723.1</FileVersion>
-    <InformationalVersion>1.1.723.1+20260723.1</InformationalVersion>
+    <FileVersion>1.1.729.2</FileVersion>
+    <InformationalVersion>1.1.729.2+20260729.2</InformationalVersion>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="UIAutomationClient" />
@@ -25,6 +25,7 @@
     <EmbeddedResource Include="../../../01-finder-sidebar/skills/skills.py" LogicalName="skills.py" />
     <EmbeddedResource Include="../../../01-finder-sidebar/skills/catalog.txt" LogicalName="catalog.txt" />
     <Resource Include="Assets/app.png" />
+    <Resource Include="Assets/clippy.png" />
     <!-- WinForms 只用于托盘 NotifyIcon，全限定调用；去掉隐式 using 避免与 WPF 类型撞名 -->
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />

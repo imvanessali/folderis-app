@@ -33,6 +33,7 @@ public partial class MainPanel : Window
         SettingsButton.ToolTip = L10n.T("设置", "Settings");
         SendButton.ToolTip = L10n.T("发送", "Send");
         InputHint.Text = L10n.T("描述操作…", "Describe a task…");
+        RailLogo.Source = BrandAssets.Logo(_settings.LogoChoice);
         InputBox.TextChanged += (_, _) => InputHint.Visibility =
             InputBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         _fileTools = new FileTools
@@ -384,10 +385,86 @@ public partial class MainPanel : Window
                        $"Build {File.GetLastWriteTime(Environment.ProcessPath!):yyyy-MM-dd HH:mm}"),
             FontSize = 10, Foreground = System.Windows.Media.Brushes.LightGray, Margin = new Thickness(0, 10, 0, 0)
         };
+
+        // —— 面板图标：默认 / Clippy / 自定义上传（对齐 mac SettingsView）——
+        var logoTitle = new SelectableText
+        {
+            Text = L10n.T("面板图标", "Panel Icon"),
+            FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 4)
+        };
+        var selectedLogo = _settings.LogoChoice;
+        var rbLogoOrb = new RadioButton { GroupName = "logo", Margin = new Thickness(0, 2, 0, 2) };
+        var rbLogoClippy = new RadioButton { GroupName = "logo", Margin = new Thickness(0, 2, 0, 2) };
+        var rbLogoCustom = new RadioButton { GroupName = "logo", Margin = new Thickness(0, 2, 0, 2) };
+        var pickLogo = new Button { Content = L10n.T("选择图片…", "Choose image…"), Padding = new Thickness(8, 2, 8, 2) };
+        var logoHint = new SelectableText
+        {
+            Text = L10n.T("建议使用正方形图片；非正方形会自动居中裁剪，过大的图片会自动压缩。",
+                          "Square images work best; non-square images are center-cropped and oversized ones compressed automatically."),
+            FontSize = 11, Foreground = System.Windows.Media.Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 10)
+        };
+
+        static StackPanel LogoLabel(string choice, string text)
+        {
+            var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+            row.Children.Add(new System.Windows.Controls.Image
+            {
+                Source = BrandAssets.Logo(choice), Width = 20, Height = 20,
+                Stretch = System.Windows.Media.Stretch.UniformToFill,
+                Margin = new Thickness(0, 0, 6, 0),
+                Clip = new System.Windows.Media.RectangleGeometry(new Rect(0, 0, 20, 20), 4, 4)
+            });
+            row.Children.Add(new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center });
+            return row;
+        }
+
+        void SyncLogoUi()
+        {
+            // 内容整块重建：导入新自定义图后预览立即更新。
+            rbLogoOrb.Content = LogoLabel("orb", L10n.T("默认", "Default"));
+            rbLogoClippy.Content = LogoLabel("clippy", "Clippy");
+            rbLogoCustom.Content = LogoLabel("custom", L10n.T("自定义图片", "Custom image"));
+            rbLogoCustom.IsEnabled = File.Exists(BrandAssets.CustomLogoPath);
+            rbLogoOrb.IsChecked = selectedLogo == "orb";
+            rbLogoClippy.IsChecked = selectedLogo == "clippy";
+            rbLogoCustom.IsChecked = selectedLogo == "custom";
+        }
+
+        rbLogoOrb.Checked += (_, _) => selectedLogo = "orb";
+        rbLogoClippy.Checked += (_, _) => selectedLogo = "clippy";
+        rbLogoCustom.Checked += (_, _) => selectedLogo = "custom";
+        pickLogo.Click += (_, _) =>
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = L10n.T("图片|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff",
+                                "Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff")
+            };
+            if (dlg.ShowDialog() != true) return;
+            try
+            {
+                BrandAssets.ImportCustom(dlg.FileName);
+                selectedLogo = "custom";
+                SyncLogoUi();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(L10n.T($"图片导入失败：{ex.Message}", $"Image import failed: {ex.Message}"),
+                    ProductInfo.Name, MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        };
+        SyncLogoUi();
+
         content.Children.Add(approvalTitle);
         content.Children.Add(rbAsk);
         content.Children.Add(rbSafe);
         content.Children.Add(rbYolo);
+        content.Children.Add(logoTitle);
+        content.Children.Add(rbLogoOrb);
+        content.Children.Add(rbLogoClippy);
+        content.Children.Add(BackendRow(rbLogoCustom, pickLogo));
+        content.Children.Add(logoHint);
         content.Children.Add(buttons);
         content.Children.Add(build);
         var dialog = new Window
@@ -404,8 +481,10 @@ public partial class MainPanel : Window
             _settings.Backend = selectedBackend;
             _settings.ApprovalMode = rbYolo.IsChecked == true ? "yolo"
                                    : rbSafe.IsChecked == true ? "safeAuto" : "ask";
+            _settings.LogoChoice = rbLogoCustom.IsEnabled && selectedLogo == "custom" ? "custom" : selectedLogo == "clippy" ? "clippy" : "orb";
             _fileTools.ApprovalMode = _settings.ApprovalMode;
             _settings.Save();
+            ApplyLogo();
             dialog.Close();
         };
         quit.Click += (_, _) => Application.Current.Shutdown();
@@ -960,6 +1039,13 @@ public partial class MainPanel : Window
         });
     }
 
+    /// <summary>设置保存后刷新窄轨与空状态里的 logo。</summary>
+    private void ApplyLogo()
+    {
+        RailLogo.Source = BrandAssets.Logo(_settings.LogoChoice);
+        UpdateEmptyState();
+    }
+
     private FrameworkElement? _emptyState;
 
     /// <summary>空状态（对齐 mac EmptyStateView）。</summary>
@@ -970,12 +1056,13 @@ public partial class MainPanel : Window
         {
             var logo = new System.Windows.Controls.Image
             {
-                Source = new System.Windows.Media.Imaging.BitmapImage(
-                    new Uri("pack://application:,,,/Assets/app.png")),
+                Source = BrandAssets.Logo(_settings.LogoChoice),
                 Width = 96,
                 Height = 96,
                 Stretch = System.Windows.Media.Stretch.Uniform,
-                HorizontalAlignment = HorizontalAlignment.Center
+                HorizontalAlignment = HorizontalAlignment.Center,
+                // 自定义/Clippy 多为不透明方图，轻裁圆角；默认透明 logo 不受影响。
+                Clip = new System.Windows.Media.RectangleGeometry(new Rect(0, 0, 96, 96), 17, 17)
             };
             var message = new SelectableText
             {

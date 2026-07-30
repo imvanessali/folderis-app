@@ -204,6 +204,14 @@ final class AppSettings: ObservableObject {
     @Published var approvalMode: ApprovalMode {
         didSet { UserDefaults.standard.set(approvalMode.rawValue, forKey: "approvalMode") }
     }
+    /// 面板/菜单栏 logo；重复赋值也会触发 didSet，重新导入自定义图后
+    /// 直接再赋一次 .custom 即可全局刷新。
+    @Published var logoChoice: LogoChoice {
+        didSet {
+            UserDefaults.standard.set(logoChoice.rawValue, forKey: "logoChoice")
+            NotificationCenter.default.post(name: BrandLogo.changedNotification, object: nil)
+        }
+    }
 
     init() {
         // API 路径只支持 DeepSeek；另支持 CLI 后端。
@@ -223,6 +231,7 @@ final class AppSettings: ObservableObject {
         self.apiKey = KeychainHelper.load(account: savedProvider.rawValue) ?? ""
         let savedMode = UserDefaults.standard.string(forKey: "approvalMode") ?? ""
         self.approvalMode = ApprovalMode(rawValue: savedMode) ?? .safeAuto
+        self.logoChoice = BrandLogo.savedChoice
         let savedBackend = UserDefaults.standard.string(forKey: "backend") ?? ""
         self.backend = BackendKind(rawValue: savedBackend) ?? .builtinAPI
         refreshCLIDetection()
