@@ -10,11 +10,13 @@ import argparse
 import csv
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
+import unicodedata
 import wave
 from pathlib import Path
 
@@ -75,16 +77,119 @@ class QAError(RuntimeError):
     pass
 
 
+def recording_filename(task_id: str, label: str) -> str:
+    """Return a stable, readable filename safe for common filesystems."""
+    clean_id = re.sub(r"[^A-Za-z0-9._-]+", "-", task_id.strip()).strip("._-")
+    clean_label = unicodedata.normalize("NFKC", label).strip()
+    clean_label = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", clean_label)
+    clean_label = re.sub(r"\s+", "-", clean_label)
+    clean_label = re.sub(r"-+", "-", clean_label).strip(" .-")
+    if not clean_id or not clean_label:
+        raise QAError(f"Recording task needs a usable ID and label: {task_id!r}, {label!r}")
+    return f"{clean_id}-{clean_label}.mp4"
+
+
 class ScreenRecorder:
-    def __init__(self, output: Path, ffmpeg: Path, overwrite: bool = False):
+    """One task-scoped recorder using a crop already approved by preflight."""
+
+    def __init__(self, output: Path, ffmpeg: Path, crop):
         self.output = output
         self.capture_output = output.with_name(f".{output.stem}.capture.mov")
+        self.encoding_output = output.with_name(f".{output.stem}.encoding.mp4")
         self.ffmpeg = ffmpeg
-        self.overwrite = overwrite
+        self.crop = crop
         self.process: subprocess.Popen | None = None
+        self.encoding_process: subprocess.Popen | None = None
         self.command: list[str] | None = None
 
     def start(self) -> None:
+        self.capture_output.unlink(missing_ok=True)
+        self.encoding_output.unlink(missing_ok=True)
+        self.command = recorder_command(self.capture_output, self.crop)
+        try:
+            self.process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            time.sleep(1.0)
+            if self.process.poll() is not None:
+                _, stderr = self.process.communicate()
+                raise QAError(
+                    "Screen recording could not start. Enable System Settings → Privacy & "
+                    "Security → Screen Recording for the terminal/Orca, then retry. "
+                    f"Recorder detail: {stderr.strip() or 'no diagnostic'}"
+                )
+        except BaseException:
+            self.cleanup()
+            raise
+
+    def stop(self) -> None:
+        try:
+            if not self.process:
+                return
+            if self.process.poll() is None:
+                try:
+                    os.killpg(self.process.pid, signal.SIGINT)
+                    self.process.wait(timeout=10)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    terminate_process_group(self.process)
+            _, stderr = self.process.communicate()
+            if not self.capture_output.is_file() or self.capture_output.stat().st_size == 0:
+                raise QAError(
+                    "Screen recording produced no video. Enable System Settings → Privacy & "
+                    "Security → Screen Recording for the terminal/Orca and retry. "
+                    f"Recorder detail: {stderr.strip() or 'no diagnostic'}"
+                )
+            self.encoding_process = subprocess.Popen(
+                [
+                    str(self.ffmpeg), "-y", "-i", str(self.capture_output),
+                    "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart", str(self.encoding_output),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            _, encode_stderr = self.encoding_process.communicate()
+            if (
+                self.encoding_process.returncode
+                or not self.encoding_output.is_file()
+                or self.encoding_output.stat().st_size == 0
+            ):
+                raise QAError(
+                    "Screen recording finished but H.264 MP4 finalization failed. "
+                    f"ffmpeg detail: {encode_stderr[-500:]}"
+                )
+            os.replace(self.encoding_output, self.output)
+        finally:
+            self.cleanup()
+
+    def cleanup(self) -> None:
+        for process in (self.encoding_process, self.process):
+            if process and process.poll() is None:
+                terminate_process_group(process)
+        self.encoding_process = None
+        self.process = None
+        self.encoding_output.unlink(missing_ok=True)
+        self.capture_output.unlink(missing_ok=True)
+
+
+class RecordingManager:
+    """Preflight and run deterministic, isolated recordings for known QA tasks."""
+
+    def __init__(self, directory: Path, ffmpeg: Path, overwrite: bool = False):
+        self.directory = directory.resolve()
+        self.ffmpeg = ffmpeg
+        self.overwrite = overwrite
+        self.crop = None
+        self.outputs: dict[str, Path] = {}
+        self.active: ScreenRecorder | None = None
+
+    def preflight(self, tasks: list[tuple[str, str]]) -> None:
         recorder = Path("/usr/sbin/screencapture")
         if not recorder.is_file():
             raise QAError(
@@ -102,11 +207,34 @@ class ScreenRecorder:
             raise QAError(
                 f"MP4 recorder support is unavailable because ffmpeg was not found: {self.ffmpeg}"
             )
-        if self.output.suffix.lower() != ".mp4":
-            raise QAError("--recording-output must end in .mp4")
-        if self.output.exists() and not self.overwrite:
+        self.outputs = {
+            task_id: self.directory / recording_filename(task_id, label)
+            for task_id, label in tasks
+        }
+        if len(self.outputs) != len(tasks) or len(set(self.outputs.values())) != len(tasks):
+            raise QAError("Recording task IDs and filenames must be unique")
+        conflicts = [
+            path
+            for output in self.outputs.values()
+            for path in (
+                output,
+                output.with_name(f".{output.stem}.capture.mov"),
+                output.with_name(f".{output.stem}.encoding.mp4"),
+            )
+            if path.exists() or path.is_symlink()
+        ]
+        if conflicts and not self.overwrite:
+            preview = ", ".join(str(path) for path in conflicts[:5])
+            extra = f" (+{len(conflicts) - 5} more)" if len(conflicts) > 5 else ""
             raise QAError(
-                f"Evidence already exists: {self.output}. Move it or pass --overwrite-evidence."
+                f"Recording evidence already exists: {preview}{extra}. Move the complete "
+                "recording directory or pass --overwrite-evidence."
+            )
+        non_files = [path for path in conflicts if path.is_dir()]
+        if non_files:
+            raise QAError(
+                "Recording evidence paths must be files, not directories: "
+                + ", ".join(str(path) for path in non_files)
             )
         bounds = subprocess.run(
             ["osascript", "-e", WINDOW_SCRIPT],
@@ -119,63 +247,45 @@ class ScreenRecorder:
                 f"permission to the terminal running QA. Detail: {bounds.stderr.strip()}"
             )
         try:
-            crop = recording_crop_from_windows(parse_named_window_rects(bounds.stdout))
+            self.crop = recording_crop_from_windows(parse_named_window_rects(bounds.stdout))
         except ValueError as exc:
             raise QAError(str(exc)) from exc
-        self.output.parent.mkdir(parents=True, exist_ok=True)
-        if self.output.exists():
-            self.output.unlink()
-        self.capture_output.unlink(missing_ok=True)
-        self.command = recorder_command(self.capture_output, crop)
-        self.process = subprocess.Popen(
-            self.command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-        time.sleep(1.0)
-        if self.process.poll() is not None:
-            _, stderr = self.process.communicate()
-            raise QAError(
-                "Screen recording could not start. Enable System Settings → Privacy & "
-                "Security → Screen Recording for the terminal/Orca, then retry. "
-                f"Recorder detail: {stderr.strip() or 'no diagnostic'}"
-            )
+        self.directory.mkdir(parents=True, exist_ok=True)
+        # All conflicts are resolved only after every task and the crop have passed
+        # preflight, so a later validation error cannot partially delete evidence.
+        for path in conflicts:
+            path.unlink()
 
-    def stop(self) -> None:
-        if not self.process:
-            return
-        if self.process.poll() is None:
-            try:
-                os.killpg(self.process.pid, signal.SIGINT)
-                self.process.wait(timeout=10)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                terminate_process_group(self.process)
-        _, stderr = self.process.communicate()
-        if not self.capture_output.is_file() or self.capture_output.stat().st_size == 0:
-            raise QAError(
-                "Screen recording produced no video. Enable System Settings → Privacy & "
-                "Security → Screen Recording for the terminal/Orca and retry. "
-                f"Recorder detail: {stderr.strip() or 'no diagnostic'}"
-            )
-        temporary_mp4 = self.output.with_name(f".{self.output.stem}.encoding.mp4")
-        temporary_mp4.unlink(missing_ok=True)
+    def start_task(self, task_id: str) -> dict:
+        output = self.outputs[task_id]
+        recording = {"path": str(output), "status": "recording", "error": None}
+        self.active = ScreenRecorder(output, self.ffmpeg, self.crop)
         try:
-            encoded = subprocess.run(
-                [str(self.ffmpeg), "-y", "-i", str(self.capture_output), "-c", "copy", str(temporary_mp4)],
-                capture_output=True,
-                text=True,
-            )
-            if encoded.returncode or not temporary_mp4.is_file() or temporary_mp4.stat().st_size == 0:
-                raise QAError(
-                    "Screen recording finished but MP4 finalization failed. "
-                    f"ffmpeg detail: {encoded.stderr[-500:]}"
-                )
-            os.replace(temporary_mp4, self.output)
+            self.active.start()
+        except BaseException as exc:
+            recording["status"] = "ERROR"
+            recording["error"] = str(exc)
+            self.active.cleanup()
+            self.active = None
+        return recording
+
+    def stop_task(self, recording: dict) -> None:
+        if not self.active:
+            return
+        try:
+            self.active.stop()
+            recording["status"] = "RECORDED"
+        except BaseException as exc:
+            recording["status"] = "ERROR"
+            recording["error"] = str(exc)
         finally:
-            temporary_mp4.unlink(missing_ok=True)
-            self.capture_output.unlink(missing_ok=True)
+            self.active.cleanup()
+            self.active = None
+
+    def cleanup(self) -> None:
+        if self.active:
+            self.active.cleanup()
+            self.active = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -188,12 +298,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--record-screen",
         action="store_true",
-        help="record only one strictly gap-free Finder + Folderis area (extra or separated windows fail)",
+        help=(
+            "record one H.264 MP4 per QA task using only one strictly gap-free Finder + "
+            "Folderis area (extra or separated windows fail)"
+        ),
     )
-    parser.add_argument("--recording-output", type=Path, default=DEFAULT_EVIDENCE / "folderis-qa-evidence.mp4")
+    parser.add_argument(
+        "--recording-directory",
+        type=Path,
+        default=DEFAULT_EVIDENCE / "recordings",
+        help="directory for per-task MP4 evidence (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--recording-output",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--overwrite-evidence", action="store_true")
     parser.add_argument("--skip-cancellation", action="store_true", help="diagnostic escape hatch; not a complete QA round")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.recording_output is not None:
+        parser.error(
+            "--recording-output was replaced by --recording-directory because QA now "
+            "writes one MP4 per task; pass the destination directory instead"
+        )
+    return args
 
 
 def resolve_runtime(args: argparse.Namespace) -> tuple[Path, Path, dict[str, str]]:
@@ -261,11 +390,52 @@ def run_command(
     )
 
 
+def recording_tasks(
+    dispatch_cases: list[dict],
+    workflow_cases: list[dict],
+    include_cancellation: bool,
+) -> list[tuple[str, str]]:
+    tasks = [(case["id"], case["label"]) for case in dispatch_cases]
+    tasks.append(("ART-COLLISION", "重复转换碰撞"))
+    tasks.extend((case["id"], case["label"]) for case in workflow_cases)
+    if include_cancellation:
+        tasks.append(("CANCEL-01", "视频压缩取消"))
+    return tasks
+
+
+def run_recorded_action(manager: RecordingManager | None, task_id: str, action):
+    """Run an action even if recording fails, always finalizing its recorder."""
+    recording = manager.start_task(task_id) if manager else None
+    try:
+        value = action()
+    finally:
+        if manager and recording:
+            manager.stop_task(recording)
+    return value, recording
+
+
+def recording_passed(recording: dict | None) -> bool:
+    return recording is None or recording["status"] == "RECORDED"
+
+
 def main() -> int:
     if sys.platform != "darwin":
         raise QAError("run_qa_macos.py must run on macOS")
     args = parse_args()
     python, skills, env_extra = resolve_runtime(args)
+    dispatch_cases = load_dispatch_cases()
+    workflow_cases = structural_cases()
+    ffmpeg = Path(env_extra["FS_FFMPEG"])
+    recorder = (
+        RecordingManager(args.recording_directory, ffmpeg, args.overwrite_evidence)
+        if args.record_screen
+        else None
+    )
+    if recorder:
+        recorder.preflight(
+            recording_tasks(dispatch_cases, workflow_cases, not args.skip_cancellation)
+        )
+
     reset = subprocess.run([str(HERE / "reset_test_folder.sh"), str(args.work_dir)], text=True)
     if reset.returncode:
         raise QAError("Fixture reset failed; QA did not start")
@@ -275,19 +445,19 @@ def main() -> int:
     results: list[dict] = []
     structural_results: list[dict] = []
     payloads: dict[str, dict] = {}
-    ffmpeg = Path(env_extra["FS_FFMPEG"])
     ffprobe = Path(env_extra["FS_FFPROBE"])
-    recorder = ScreenRecorder(args.recording_output, ffmpeg, args.overwrite_evidence) if args.record_screen else None
-    if recorder:
-        recorder.start()
 
     try:
-        for case in load_dispatch_cases():
+        for case in dispatch_cases:
             cwd = work / case["cwd"]
             selected = [str((cwd / name).resolve()) for name in case["files"]]
             command = ["local-dispatch", "--request", case["request"], "--files", *selected]
             started = time.time()
-            completed = run_command(python, skills, cwd, command, env_extra)
+            completed, recording = run_recorded_action(
+                recorder,
+                case["id"],
+                lambda: run_command(python, skills, cwd, command, env_extra),
+            )
             try:
                 payload = parse_dispatch_payload(completed.stdout)
                 passed = payload.get("matched") is case["expect_matched"]
@@ -297,6 +467,7 @@ def main() -> int:
                     passed = passed and not payload.get("outputs")
             except Exception as exc:
                 payload, passed = {"parse_error": str(exc)}, False
+            passed = passed and recording_passed(recording)
             payloads[case["id"]] = payload
             results.append({
                 "id": case["id"],
@@ -306,28 +477,39 @@ def main() -> int:
                 "ai_bypassed": True,
                 "elapsed": round(time.time() - started, 2),
                 "payload": payload,
+                "recording": recording,
             })
             print(f"[{'PASS' if passed else 'FAIL'}] {case['id']} {case['label']}")
 
         # Repeat conversion to prove deterministic _2 collision behavior.
-        collision_case = next(case for case in load_dispatch_cases() if case["id"] == "LD-02")
+        collision_case = next(case for case in dispatch_cases if case["id"] == "LD-02")
         collision_cwd = work / collision_case["cwd"]
-        collision = run_command(
-            python,
-            skills,
-            collision_cwd,
-            ["local-dispatch", "--request", collision_case["request"], "--files",
-             str((collision_cwd / collision_case["files"][0]).resolve())],
-            env_extra,
+        collision, collision_recording = run_recorded_action(
+            recorder,
+            "ART-COLLISION",
+            lambda: run_command(
+                python,
+                skills,
+                collision_cwd,
+                ["local-dispatch", "--request", collision_case["request"], "--files",
+                 str((collision_cwd / collision_case["files"][0]).resolve())],
+                env_extra,
+            ),
         )
         collision_payload = parse_dispatch_payload(collision.stdout)
         collision_names = [Path(path).name for path in collision_payload.get("outputs", [])]
         expected_collision = "michail-sapiton-alCEnNmzhPE-unsplash_2.webp"
+        collision_ok = (
+            collision_names == [expected_collision]
+            and recording_passed(collision_recording)
+        )
         results.append({
             "id": "ART-COLLISION",
-            "status": "PASS" if collision_names == [expected_collision] else "FAIL",
+            "label": "重复转换碰撞",
+            "status": "PASS" if collision_ok else "FAIL",
             "expected_output": expected_collision,
             "actual_outputs": collision_names,
+            "recording": collision_recording,
         })
 
         from PIL import Image
@@ -453,7 +635,7 @@ def main() -> int:
         # Execute the established 47-case real-fixture round. Each row runs one
         # built-in skill workflow and receives a command-specific semantic
         # validator; there are no padding/aggregate PASS rows.
-        for case in structural_cases():
+        for case in workflow_cases:
             cwd = work / case["cwd"]
             selected_paths = [(cwd / item).resolve() for item in case["inputs"]]
             selected_inputs = [str(path) for path in selected_paths]
@@ -464,7 +646,11 @@ def main() -> int:
             }
             before = snapshot_files(work)
             started = time.time()
-            completed = run_command(python, skills, cwd, case["args"], env_extra)
+            completed, recording = run_recorded_action(
+                recorder,
+                case["id"],
+                lambda: run_command(python, skills, cwd, case["args"], env_extra),
+            )
             after = snapshot_files(work)
             outputs = [
                 work / relative
@@ -500,6 +686,13 @@ def main() -> int:
                         failure = "one or more selected input files changed"
                 except Exception as exc:
                     failure = f"semantic validation failed: {exc}"
+            if not recording_passed(recording):
+                recording_error = recording["error"] if recording else "unknown recording error"
+                failure = (
+                    f"{failure}; recording failed: {recording_error}"
+                    if failure
+                    else f"recording failed: {recording_error}"
+                )
             status = "PASS" if failure is None else "FAIL"
             structural_results.append({
                 "id": case["id"],
@@ -514,6 +707,7 @@ def main() -> int:
                 "elapsed": round(time.time() - started, 2),
                 "evidence": evidence,
                 "failure": failure,
+                "recording": recording,
             })
             print(f"[{status}] {case['id']} {case['label']}")
 
@@ -527,14 +721,27 @@ def main() -> int:
                 str(python), str(skills), "local-dispatch", "--request", "压缩这个视频",
                 "--files", str(source_video),
             ]
-            cancel = cancellation_probe(cancel_command, source_video.parent, source_video.parent)
+            cancel, cancel_recording = run_recorded_action(
+                recorder,
+                "CANCEL-01",
+                lambda: cancellation_probe(
+                    cancel_command, source_video.parent, source_video.parent
+                ),
+            )
+            cancel_ok = (
+                not cancel["process_group_alive"]
+                and not cancel["residual_outputs"]
+                and recording_passed(cancel_recording)
+            )
             results.append({
                 "id": "CANCEL-01",
-                "status": "PASS" if not cancel["process_group_alive"] and not cancel["residual_outputs"] else "FAIL",
+                "label": "视频压缩取消",
+                "status": "PASS" if cancel_ok else "FAIL",
                 "selected_inputs": [str(source_video)],
                 "process_cleanup": not cancel["process_group_alive"],
                 "residual_outputs": cancel["residual_outputs"],
                 "note": "A residual output is reported as a Folderis product failure and is not deleted by QA.",
+                "recording": cancel_recording,
             })
 
         current = snapshot_files(work)
@@ -550,7 +757,7 @@ def main() -> int:
         })
     finally:
         if recorder:
-            recorder.stop()
+            recorder.cleanup()
 
     report = {
         "schema_version": 1,
@@ -560,7 +767,7 @@ def main() -> int:
         "fixture_reset": True,
         "skills_sha256": sha256(skills),
         "python_executable": str(python),
-        "screen_recording": str(args.recording_output) if recorder else None,
+        "screen_recording_directory": str(args.recording_directory.resolve()) if recorder else None,
         "results": results,
         "structural_validations": structural_results,
         "structural_summary": {

@@ -20,15 +20,23 @@ python3 test-fixtures/run_qa_macos.py
 可选录屏只截 Finder 与 Folderis 面板形成的单一无缝矩形。启动前必须只保留
 一个 Finder 窗口和一个 Folderis 面板（关闭设置/引导等额外窗口），并把面板
 紧贴 Finder、对齐上下边；否则脚本会在录制前明确失败，绝不把桌面缝隙录进去。
+该裁剪范围只在整轮开始前检查一次并由所有任务复用，绝不会为某个任务扩大。
 首次使用需在「隐私与安全性 → 屏幕录制」授权：
 
 ```bash
 python3 test-fixtures/run_qa_macos.py --record-screen
 ```
 
-证据固定写到 `~/Downloads/Folderis QA Evidence/`。已有录屏不会静默覆盖；
-确认替换本轮固定文件时显式加 `--overwrite-evidence`。Windows 真机脚本与
-macOS 脚本共用 `local_dispatch_cases.json`，两端正/负路由用例只维护一份。
+每个实际 QA 任务各写一个可独立播放的 H.264 MP4，默认位于
+`~/Downloads/Folderis QA Evidence/recordings/`。文件名以稳定任务 ID 开头，
+报告中对应的任务行会记录视频路径、`RECORDED`/`ERROR` 状态和错误详情。纯粹在
+命令结束后读取产物、原件或哈希的汇总验证不会生成空录屏。可用
+`--recording-directory PATH` 改目录；旧的单文件 `--recording-output` 会给出明确
+迁移提示。整轮开始前会一次性检查全部目标文件，已有证据不会静默覆盖；确认
+替换本轮同名文件时显式加 `--overwrite-evidence`。
+
+Windows 真机脚本与 macOS 脚本共用 `local_dispatch_cases.json`，两端正/负路由
+用例只维护一份。
 此外，macOS 报告的 `structural_validations` 会逐项执行并语义验证既有
 `W-01`…`W-47` 真素材工作流；每行都记录精确输入、实际输出、关键参数和证据，
 不会用汇总行或填充 PASS 冒充 47 项。

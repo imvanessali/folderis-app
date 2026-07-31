@@ -52,6 +52,13 @@ class SharedDispatchCaseTests(unittest.TestCase):
 
 
 class RecorderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = load_module(
+            "folderis_macos_qa_recorder_tests",
+            FIXTURES / "run_qa_macos.py",
+        )
+
     @unittest.skipUnless(sys.platform == "darwin", "real AppleScript smoke test requires macOS")
     def test_real_window_script_executes_when_finder_is_available(self):
         finder = subprocess.run(["pgrep", "-x", "Finder"], capture_output=True)
@@ -81,6 +88,182 @@ class RecorderTests(unittest.TestCase):
             "strictly gap-free Finder + Folderis area",
             " ".join(result.stdout.split()),
         )
+        self.assertIn("--recording-directory", result.stdout)
+
+    def test_legacy_single_output_flag_has_actionable_rejection(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(FIXTURES / "run_qa_macos.py"),
+                "--recording-output",
+                "/tmp/old.mp4",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--recording-directory", result.stderr)
+        self.assertIn("one MP4 per task", result.stderr)
+
+    def test_recording_filename_is_stable_sanitized_and_readable(self):
+        self.assertEqual(
+            self.runner.recording_filename("W-01", ' 图片 水印:/?* '),
+            "W-01-图片-水印.mp4",
+        )
+        self.assertEqual(
+            self.runner.recording_filename("CANCEL-01", "视频压缩取消"),
+            "CANCEL-01-视频压缩取消.mp4",
+        )
+
+    def test_manifest_contains_only_actual_tasks(self):
+        tasks = self.runner.recording_tasks(
+            load_dispatch_cases(), structural_cases(), True
+        )
+        self.assertEqual(len(tasks), 61)
+        self.assertEqual(tasks[0][0], "LD-01")
+        self.assertIn(("ART-COLLISION", "重复转换碰撞"), tasks)
+        self.assertIn(("CANCEL-01", "视频压缩取消"), tasks)
+        self.assertEqual(
+            [task_id for task_id, _ in tasks if task_id.startswith("W-")],
+            [f"W-{index:02d}" for index in range(1, 48)],
+        )
+        self.assertFalse(any(task_id in {"ART-CROP", "ART-HASH", "ORIGINALS"} for task_id, _ in tasks))
+
+    def test_per_task_lifecycle_maps_video_into_result_and_preserves_failure(self):
+        events = []
+
+        class FakeRecorder:
+            def __init__(fake, output, ffmpeg, crop):
+                fake.output = output
+
+            def start(fake):
+                events.append("start")
+
+            def stop(fake):
+                events.append("stop")
+                fake.output.write_bytes(b"playable")
+
+            def cleanup(fake):
+                events.append("cleanup")
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            manager = self.runner.RecordingManager(directory, directory / "ffmpeg")
+            manager.outputs = {"LD-01": directory / "LD-01-label.mp4"}
+            manager.crop = Rect(0, 0, 100, 100)
+
+            def failing_action():
+                events.append("action")
+                return subprocess.CompletedProcess([], 1)
+
+            with mock.patch.object(self.runner, "ScreenRecorder", FakeRecorder):
+                completed, recording = self.runner.run_recorded_action(
+                    manager, "LD-01", failing_action
+                )
+
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(events[:3], ["start", "action", "stop"])
+            self.assertEqual(recording["status"], "RECORDED")
+            self.assertIsNone(recording["error"])
+            self.assertEqual(recording["path"], str(directory / "LD-01-label.mp4"))
+            self.assertTrue(Path(recording["path"]).is_file())
+
+    def test_action_still_runs_and_json_gets_error_when_recorder_start_fails(self):
+        events = []
+
+        class FailingRecorder:
+            def __init__(fake, output, ffmpeg, crop):
+                pass
+
+            def start(fake):
+                events.append("start")
+                raise RuntimeError("permission denied")
+
+            def cleanup(fake):
+                events.append("cleanup")
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            manager = self.runner.RecordingManager(directory, directory / "ffmpeg")
+            manager.outputs = {"W-01": directory / "W-01-label.mp4"}
+            manager.crop = Rect(0, 0, 100, 100)
+            with mock.patch.object(self.runner, "ScreenRecorder", FailingRecorder):
+                value, recording = self.runner.run_recorded_action(
+                    manager,
+                    "W-01",
+                    lambda: events.append("action") or "done",
+                )
+            self.assertEqual(value, "done")
+            self.assertEqual(events, ["start", "cleanup", "action"])
+            self.assertEqual(recording["status"], "ERROR")
+            self.assertIn("permission denied", recording["error"])
+
+    def test_output_collisions_are_checked_as_one_preflight(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            ffmpeg = directory / "ffmpeg"
+            ffmpeg.touch()
+            first = directory / self.runner.recording_filename("LD-01", "one")
+            second = directory / self.runner.recording_filename("W-01", "two")
+            first.write_bytes(b"old-one")
+            second.write_bytes(b"old-two")
+            help_result = subprocess.CompletedProcess(
+                [], 0, stdout="-v -R<x,y,w,h>", stderr=""
+            )
+            bounds_result = subprocess.CompletedProcess(
+                [], 0,
+                stdout="Finder\t100\t50\t900\t700\nFolderis\t40\t50\t60\t700\n",
+                stderr="",
+            )
+            with mock.patch.object(Path, "is_file", return_value=True), mock.patch.object(
+                self.runner.subprocess, "run", side_effect=[help_result]
+            ):
+                manager = self.runner.RecordingManager(directory, ffmpeg)
+                with self.assertRaisesRegex(self.runner.QAError, "already exists"):
+                    manager.preflight([("LD-01", "one"), ("W-01", "two")])
+            self.assertEqual(first.read_bytes(), b"old-one")
+            self.assertEqual(second.read_bytes(), b"old-two")
+
+            with mock.patch.object(Path, "is_file", return_value=True), mock.patch.object(
+                self.runner.subprocess,
+                "run",
+                side_effect=[help_result, bounds_result],
+            ):
+                manager = self.runner.RecordingManager(directory, ffmpeg, overwrite=True)
+                manager.preflight([("LD-01", "one"), ("W-01", "two")])
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+
+    def test_cleanup_terminates_processes_and_removes_only_temporary_residue(self):
+        class RunningProcess:
+            def poll(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            output = directory / "W-01-label.mp4"
+            output.write_bytes(b"finalized")
+            recorder = self.runner.ScreenRecorder(
+                output, directory / "ffmpeg", Rect(0, 0, 100, 100)
+            )
+            recorder.capture_output.write_bytes(b"capture")
+            recorder.encoding_output.write_bytes(b"encoding")
+            recorder.process = RunningProcess()
+            recorder.encoding_process = RunningProcess()
+            with mock.patch.object(
+                self.runner, "terminate_process_group"
+            ) as terminate:
+                recorder.cleanup()
+            self.assertEqual(terminate.call_count, 2)
+            self.assertFalse(recorder.capture_output.exists())
+            self.assertFalse(recorder.encoding_output.exists())
+            self.assertEqual(output.read_bytes(), b"finalized")
+
+    def test_finalization_explicitly_encodes_h264_playable_mp4(self):
+        source = (FIXTURES / "run_qa_macos.py").read_text(encoding="utf-8")
+        self.assertIn('"-c:v", "libx264"', source)
+        self.assertIn('"-pix_fmt", "yuv420p"', source)
+        self.assertIn('"-movflags", "+faststart"', source)
 
     def test_crop_is_gap_free_union_of_exact_docked_pair(self):
         windows = parse_named_window_rects(
