@@ -10,6 +10,10 @@
 import argparse, json, os, subprocess, sys, time, hashlib
 from pathlib import Path
 
+FIXTURES = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(FIXTURES))
+from qa_support import load_dispatch_cases
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Folderis Windows 技能 QA")
     parser.add_argument("work", nargs="?", default=str(Path.home() / "Downloads" / "Test Folderis"))
@@ -49,13 +53,17 @@ def run(id_, instr, cwd, args, expect_output=None):
     results.append(dict(id=id_, instr=instr, status=st, elapsed=round(time.time()-t0,2), note=note))
     print(f"[{st}] {id_} {instr}")
 
-def dispatch(id_, instr, cwd, request, files, expect_matched):
+def dispatch(id_, instr, cwd, request, files, expect_matched, expect_skill=None):
     r = subprocess.run([str(PY), str(SKILLS), "local-dispatch", "--request", request, "--files", *files],
                        cwd=str(cwd), capture_output=True, text=True, timeout=180,
                        encoding="utf-8", errors="replace")
     try:
         p = json.loads(r.stdout.split(MARK,1)[1])
-        ok = p.get("matched") == expect_matched and (not expect_matched or p.get("success"))
+        ok = p.get("matched") == expect_matched
+        if expect_matched:
+            ok = ok and p.get("success") and p.get("skill") == expect_skill
+        else:
+            ok = ok and not p.get("outputs")
     except Exception:
         ok, p = False, {"raw": r.stdout[-200:]}
     st = "PASS" if ok else "FAIL"
@@ -68,19 +76,17 @@ JPG = "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
 PNG = "marko-brecic-Z9P2g8TuTdA-unsplash.png"
 MP4 = "file_example_MP4_1280_10MG.mp4"
 
-# local-dispatch 五正五负
-dispatch("LD-01","本地裁剪", IMG, "从（100，50）开始裁剪成800×600px", [JPG], True)
-dispatch("LD-02","本地转webp", IMG, "把这张图转成 webp", [JPG], True)
-dispatch("LD-03","本地xlsx转csv", XLS, "转换为 csv 格式", ["样例数据.xlsx"], True)
-dispatch("LD-04","本地PDF抽页", PDF, "抽取第2-5页另存", ["ai_agents_handbook.pdf"], True)
-dispatch("LD-05","本地转gif", VID, "把前5秒做成 gif，宽480", [MP4], True)
-dispatch("LD-06","模糊拒接", IMG, "处理一下这张图", [JPG], False)
-dispatch("LD-07","水印拒接", IMG, "加个水印再裁剪成800×600", [JPG], False)
-dispatch("LD-08","缺参拒接", IMG, "帮我裁剪一下", [JPG], False)
-dispatch("LD-09","覆盖拒接", IMG, "转成webp并覆盖原文件", [JPG], False)
-dispatch("LD-10","混合拒接", IMG, "转成webp顺便压缩一下", [JPG], False)
-dispatch("LD-11","本地视频压缩", VID, "压缩这个视频", [MP4], True)
-dispatch("LD-12","视频打包拒接", VID, "把这个视频打包压缩", [MP4], False)
+# macOS 和 Windows 共用同一份正/负路由用例，避免两端 QA 漂移。
+for case in load_dispatch_cases():
+    dispatch(
+        case["id"],
+        case["label"],
+        WORK / case["cwd"],
+        case["request"],
+        case["files"],
+        case["expect_matched"],
+        case.get("expect_skill"),
+    )
 
 # 跨平台技能回归（Windows 可用集）
 run("W-01","水印", IMG, ["img-watermark", JPG, "--text","(c) 2026","--position","br"])

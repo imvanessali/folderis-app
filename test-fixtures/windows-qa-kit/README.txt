@@ -10,6 +10,9 @@ Folderis Windows QA 工具包
    （脚本定位安装目录里的 runtime，缺失时才按 App 规则回退，并打印所用 skills.py 的哈希）
 3. 结束后把 qa-windows-results.json 发回（尤其有 FAIL 时）。
 
+local-dispatch 的正/负用例来自上一级 local_dispatch_cases.json；打包本 QA kit
+时必须连同该文件和 qa_support.py 一起保留，macOS 与 Windows 不再各自维护副本。
+
 说明：
 - 转写/抠图/分卷等重组件如未安装会 FAIL 并提示 install-component，属预期；
   想全绿可先在面板里让 AI 装齐组件再跑。

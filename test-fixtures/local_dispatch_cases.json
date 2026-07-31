@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "LD-01",
+      "label": "本地裁剪",
+      "cwd": "Test Image",
+      "request": "从（100，50）开始裁剪成800×600px",
+      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "expect_matched": true,
+      "expect_skill": "img-resize"
+    },
+    {
+      "id": "LD-02",
+      "label": "本地转webp",
+      "cwd": "Test Image",
+      "request": "把这张图转成 webp",
+      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "expect_matched": true,
+      "expect_skill": "img-convert"
+    },
+    {
+      "id": "LD-03",
+      "label": "本地xlsx转csv",
+      "cwd": "Test Excel",
+      "request": "转换为 csv 格式",
+      "files": ["样例数据.xlsx"],
+      "expect_matched": true,
+      "expect_skill": "table-convert"
+    },
+    {
+      "id": "LD-04",
+      "label": "本地PDF抽页",
+      "cwd": "Test PDF",
+      "request": "抽取第2-5页另存",
+      "files": ["ai_agents_handbook.pdf"],
+      "expect_matched": true,
+      "expect_skill": "pdf-split"
+    },
+    {
+      "id": "LD-05",
+      "label": "本地转gif",
+      "cwd": "Test Video",
+      "request": "把前5秒做成 gif，宽480",
+      "files": ["file_example_MP4_1280_10MG.mp4"],
+      "expect_matched": true,
+      "expect_skill": "av-gif"
+    },
+    {
+      "id": "LD-06",
+      "label": "模糊拒接",
+      "cwd": "Test Image",
+      "request": "处理一下这张图",
+      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "expect_matched": false
+    },
+    {
+      "id": "LD-07",
+      "label": "水印拒接",
+      "cwd": "Test Image",
+      "request": "加个水印再裁剪成800×600",
+      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "expect_matched": false
+    },
+    {
+      "id": "LD-08",
+      "label": "缺参拒接",
+      "cwd": "Test Image",
+      "request": "帮我裁剪一下",
+      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "expect_matched": false
+    },
+    {
+      "id": "LD-09",
+      "label": "覆盖拒接",
+      "cwd": "Test Image",
+      "request": "转成webp并覆盖原文件",
+      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "expect_matched": false
+    },
+    {
+      "id": "LD-10",
+      "label": "混合拒接",
+      "cwd": "Test Image",
+      "request": "转成webp顺便压缩一下",
+      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "expect_matched": false
+    },
+    {
+      "id": "LD-11",
+      "label": "本地视频压缩",
+      "cwd": "Test Video",
+      "request": "压缩这个视频",
+      "files": ["file_example_MP4_1280_10MG.mp4"],
+      "expect_matched": true,
+      "expect_skill": "av-compress"
+    },
+    {
+      "id": "LD-12",
+      "label": "视频打包拒接",
+      "cwd": "Test Video",
+      "request": "把这个视频打包压缩",
+      "files": ["file_example_MP4_1280_10MG.mp4"],
+      "expect_matched": false
+    }
+  ]
+}

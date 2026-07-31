@@ -69,6 +69,21 @@ gh release create <构建号> --repo imvanessali/folderis-releases \
 
 撤回 = 把 version 改回线上已发布的版本号再跑一次；横幅在客户端下一轮检查时收起。发布机一次性准备只有 `npm i -g wrangler && wrangler login`。
 
+## 统一版本号
+
+macOS 与 Windows 的发布/工程版本由一个命令原子同步。先预览，再写入并校验：
+
+```bash
+python3 scripts/bump_version.py 1.2.0 20260731.1 --dry-run
+python3 scripts/bump_version.py 1.2.0 20260731.1
+python3 scripts/bump_version.py --check
+```
+
+应用版本接受 2–4 段数字；构建号必须是 `YYYYMMDD.N`。无效输入或任一目标
+无法更新时不会留下半套版本修改，重复执行同一版本不会产生额外变更。
+`announce/public/announce.json` 是发布后的公告开关，不属于构建版本源，仍在
+上传发布件后通过 `publish_notice.sh` 单独下发。
+
 ## 使用
 
 - 菜单栏有一个气泡图标：显示/隐藏面板、退出。
