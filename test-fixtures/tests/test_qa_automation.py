@@ -148,7 +148,11 @@ class RecorderTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
-            manager = self.runner.RecordingManager(directory, directory / "ffmpeg")
+            manager = self.runner.RecordingManager(
+                directory,
+                directory / "ffmpeg",
+                window_preparer=lambda approved, crop: None,
+            )
             manager.outputs = {"LD-01": directory / "LD-01-label.mp4"}
             manager.crop = Rect(0, 0, 100, 100)
 
@@ -184,7 +188,11 @@ class RecorderTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
-            manager = self.runner.RecordingManager(directory, directory / "ffmpeg")
+            manager = self.runner.RecordingManager(
+                directory,
+                directory / "ffmpeg",
+                window_preparer=lambda approved, crop: None,
+            )
             manager.outputs = {"W-01": directory / "W-01-label.mp4"}
             manager.crop = Rect(0, 0, 100, 100)
             with mock.patch.object(self.runner, "ScreenRecorder", FailingRecorder):
@@ -197,6 +205,168 @@ class RecorderTests(unittest.TestCase):
             self.assertEqual(events, ["start", "cleanup", "action"])
             self.assertEqual(recording["status"], "ERROR")
             self.assertIn("permission denied", recording["error"])
+
+    def test_each_task_reactivates_and_revalidates_before_recorder_start(self):
+        events = []
+        approved = [
+            ("Finder", Rect(100, 50, 900, 700)),
+            ("Folderis", Rect(40, 50, 60, 700)),
+        ]
+
+        class FakeRecorder:
+            def __init__(fake, output, ffmpeg, crop):
+                fake.output = output
+
+            def start(fake):
+                events.append(("recorder-start", fake.output.name))
+
+            def stop(fake):
+                pass
+
+            def cleanup(fake):
+                pass
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+
+            def prepare(current_approved, crop):
+                events.append(("prepare", current_approved, crop))
+
+            manager = self.runner.RecordingManager(
+                directory, directory / "ffmpeg", window_preparer=prepare
+            )
+            manager.approved_windows = approved
+            manager.crop = Rect(40, 50, 960, 700)
+            manager.outputs = {
+                "LD-01": directory / "LD-01-one.mp4",
+                "W-24": directory / "W-24-two.mp4",
+            }
+            with mock.patch.object(self.runner, "ScreenRecorder", FakeRecorder):
+                first = manager.start_task("LD-01")
+                manager.stop_task(first)
+                second = manager.start_task("W-24")
+                manager.stop_task(second)
+
+        self.assertEqual(
+            [event[0] for event in events],
+            ["prepare", "recorder-start", "prepare", "recorder-start"],
+        )
+        self.assertIs(events[0][1], approved)
+        self.assertIs(events[2][1], approved)
+
+    def test_exact_finder_activation_only_raises_window_without_touching_selection(self):
+        selected_inputs = ["/fixtures/one.jpg", "/fixtures/two.jpg"]
+        activated = subprocess.CompletedProcess([], 0, stdout="raised", stderr="")
+        with mock.patch.object(
+            self.runner.subprocess, "run", return_value=activated
+        ) as run:
+            self.runner.activate_exact_finder_window(Rect(100, 50, 900, 700))
+        self.assertEqual(selected_inputs, ["/fixtures/one.jpg", "/fixtures/two.jpg"])
+        command = run.call_args.args[0]
+        self.assertEqual(command[-4:], ["100", "50", "900", "700"])
+        self.assertIn("AXRaise", command[2])
+        self.assertNotIn("click", command[2].lower())
+
+    def test_task_window_helper_waits_for_panel_then_accepts_exact_geometry(self):
+        approved = [
+            ("Finder", Rect(100, 50, 900, 700)),
+            ("Folderis", Rect(40, 50, 60, 700)),
+        ]
+        reads = iter([
+            [("Finder", Rect(100, 50, 900, 700))],
+            approved,
+        ])
+        waits = []
+        self.runner.prepare_task_recording_windows(
+            approved,
+            Rect(40, 50, 960, 700),
+            activate_finder=lambda finder: None,
+            read_windows=lambda: next(reads),
+            wait=waits.append,
+            attempts=2,
+        )
+        self.assertEqual(waits, [0.1])
+
+    def test_task_window_helper_waits_and_fails_when_panel_is_missing(self):
+        approved = [
+            ("Finder", Rect(100, 50, 900, 700)),
+            ("Folderis", Rect(40, 50, 60, 700)),
+        ]
+        activation = []
+        reads = iter([
+            [("Finder", Rect(100, 50, 900, 700))],
+            [("Finder", Rect(100, 50, 900, 700))],
+        ])
+        with self.assertRaisesRegex(
+            self.runner.QAError, "exactly one visible.*Folderis=0"
+        ):
+            self.runner.prepare_task_recording_windows(
+                approved,
+                Rect(40, 50, 960, 700),
+                activate_finder=lambda finder: activation.append(finder),
+                read_windows=lambda: next(reads),
+                wait=lambda seconds: None,
+                attempts=2,
+            )
+        self.assertEqual(activation, [Rect(100, 50, 900, 700)])
+
+    def test_task_window_helper_rejects_changed_crop(self):
+        approved = [
+            ("Finder", Rect(100, 50, 900, 700)),
+            ("Folderis", Rect(40, 50, 60, 700)),
+        ]
+        changed = [
+            ("Finder", Rect(120, 50, 900, 700)),
+            ("Folderis", Rect(60, 50, 60, 700)),
+        ]
+        with self.assertRaisesRegex(self.runner.QAError, "geometry changed"):
+            self.runner.prepare_task_recording_windows(
+                approved,
+                Rect(40, 50, 960, 700),
+                activate_finder=lambda finder: None,
+                read_windows=lambda: changed,
+                wait=lambda seconds: None,
+                attempts=1,
+            )
+
+    def test_unsafe_task_state_never_constructs_or_starts_screencapture(self):
+        approved = [
+            ("Finder", Rect(100, 50, 900, 700)),
+            ("Folderis", Rect(40, 50, 60, 700)),
+        ]
+        unsafe_states = {
+            "panel missing": [("Finder", Rect(100, 50, 900, 700))],
+            "crop changed": [
+                ("Finder", Rect(120, 50, 900, 700)),
+                ("Folderis", Rect(60, 50, 60, 700)),
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            for label, current in unsafe_states.items():
+                with self.subTest(label=label), mock.patch.object(
+                    self.runner, "ScreenRecorder"
+                ) as recorder:
+                    def prepare(current_approved, crop, unsafe=current):
+                        self.runner.prepare_task_recording_windows(
+                            current_approved,
+                            crop,
+                            activate_finder=lambda finder: None,
+                            read_windows=lambda: unsafe,
+                            wait=lambda seconds: None,
+                            attempts=1,
+                        )
+
+                    manager = self.runner.RecordingManager(
+                        directory, directory / "ffmpeg", window_preparer=prepare
+                    )
+                    manager.approved_windows = approved
+                    manager.crop = Rect(40, 50, 960, 700)
+                    manager.outputs = {"LD-01": directory / "LD-01-one.mp4"}
+                    recording = manager.start_task("LD-01")
+                    self.assertEqual(recording["status"], "ERROR")
+                    self.assertIn("screencapture was not started", recording["error"])
+                    recorder.assert_not_called()
 
     def test_output_collisions_are_checked_as_one_preflight(self):
         with tempfile.TemporaryDirectory() as temp:

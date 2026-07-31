@@ -22,6 +22,7 @@ from pathlib import Path
 
 from qa_support import (
     MARKER,
+    Rect,
     cancellation_probe,
     load_dispatch_cases,
     parse_named_window_rects,
@@ -31,7 +32,6 @@ from qa_support import (
     sha256,
     snapshot_files,
     terminate_process_group,
-    union_rects,
 )
 from qa_semantic_validators import validate_structural_case
 from qa_structural_cases import structural_cases
@@ -71,6 +71,34 @@ tell application "System Events"
   return windowLines as text
 end tell
 '''
+ACTIVATE_FINDER_WINDOW_SCRIPT = r'''
+on run argv
+  set targetX to (item 1 of argv) as integer
+  set targetY to (item 2 of argv) as integer
+  set targetWidth to (item 3 of argv) as integer
+  set targetHeight to (item 4 of argv) as integer
+  tell application "System Events"
+    if not (exists process "Finder") then error "Finder is not running"
+    tell process "Finder"
+      set frontmost to true
+      repeat with w in windows
+        try
+          if not (value of attribute "AXMinimized" of w) then
+            set p to position of w
+            set s to size of w
+            if (item 1 of p) = targetX and (item 2 of p) = targetY and ¬
+              (item 1 of s) = targetWidth and (item 2 of s) = targetHeight then
+              perform action "AXRaise" of w
+              return "raised"
+            end if
+          end if
+        end try
+      end repeat
+    end tell
+  end tell
+  error "The Finder window approved at recording preflight is no longer available"
+end run
+'''
 
 
 class QAError(RuntimeError):
@@ -87,6 +115,75 @@ def recording_filename(task_id: str, label: str) -> str:
     if not clean_id or not clean_label:
         raise QAError(f"Recording task needs a usable ID and label: {task_id!r}, {label!r}")
     return f"{clean_id}-{clean_label}.mp4"
+
+
+def read_recording_windows() -> list[tuple[str, Rect]]:
+    bounds = subprocess.run(
+        ["osascript", "-e", WINDOW_SCRIPT],
+        capture_output=True,
+        text=True,
+    )
+    if bounds.returncode != 0:
+        raise QAError(
+            "Unable to read Finder/Folderis window bounds. Grant Accessibility "
+            f"permission to the terminal running QA. Detail: {bounds.stderr.strip()}"
+        )
+    return parse_named_window_rects(bounds.stdout)
+
+
+def activate_exact_finder_window(finder: Rect) -> None:
+    """Raise the approved Finder window without clicking or changing selection."""
+    activated = subprocess.run(
+        [
+            "osascript", "-e", ACTIVATE_FINDER_WINDOW_SCRIPT, "--",
+            str(finder.x), str(finder.y), str(finder.width), str(finder.height),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if activated.returncode != 0:
+        raise QAError(
+            "Unable to reactivate the Finder window approved at preflight without "
+            f"changing its geometry. Detail: {activated.stderr.strip()}"
+        )
+
+
+def prepare_task_recording_windows(
+    approved_windows: list[tuple[str, Rect]],
+    approved_crop: Rect,
+    *,
+    activate_finder=activate_exact_finder_window,
+    read_windows=read_recording_windows,
+    wait=time.sleep,
+    attempts: int = 20,
+    wait_seconds: float = 0.1,
+) -> None:
+    """Restore and prove the approved foreground content before one recording."""
+    approved_finders = [rect for name, rect in approved_windows if name == "Finder"]
+    if len(approved_finders) != 1:
+        raise QAError("Recording preflight did not retain exactly one approved Finder window")
+    activate_finder(approved_finders[0])
+    approved_geometry = sorted(approved_windows, key=lambda item: item[0])
+    last_error = "Folderis panel did not become visible"
+    for attempt in range(attempts):
+        try:
+            current_windows = read_windows()
+            current_crop = recording_crop_from_windows(current_windows)
+            current_geometry = sorted(current_windows, key=lambda item: item[0])
+            if current_crop != approved_crop or current_geometry != approved_geometry:
+                raise QAError(
+                    "Finder/Folderis recording geometry changed after preflight; "
+                    f"approved crop={approved_crop}, current crop={current_crop}"
+                )
+            return
+        except (QAError, ValueError) as exc:
+            last_error = str(exc)
+        if attempt + 1 < attempts:
+            wait(wait_seconds)
+    raise QAError(
+        "Unsafe per-task recording state after reactivating Finder; screencapture "
+        f"was not started. Detail: {last_error}"
+    )
 
 
 class ScreenRecorder:
@@ -181,13 +278,22 @@ class ScreenRecorder:
 class RecordingManager:
     """Preflight and run deterministic, isolated recordings for known QA tasks."""
 
-    def __init__(self, directory: Path, ffmpeg: Path, overwrite: bool = False):
+    def __init__(
+        self,
+        directory: Path,
+        ffmpeg: Path,
+        overwrite: bool = False,
+        *,
+        window_preparer=prepare_task_recording_windows,
+    ):
         self.directory = directory.resolve()
         self.ffmpeg = ffmpeg
         self.overwrite = overwrite
         self.crop = None
+        self.approved_windows: list[tuple[str, Rect]] = []
         self.outputs: dict[str, Path] = {}
         self.active: ScreenRecorder | None = None
+        self.window_preparer = window_preparer
 
     def preflight(self, tasks: list[tuple[str, str]]) -> None:
         recorder = Path("/usr/sbin/screencapture")
@@ -236,18 +342,9 @@ class RecordingManager:
                 "Recording evidence paths must be files, not directories: "
                 + ", ".join(str(path) for path in non_files)
             )
-        bounds = subprocess.run(
-            ["osascript", "-e", WINDOW_SCRIPT],
-            capture_output=True,
-            text=True,
-        )
-        if bounds.returncode != 0:
-            raise QAError(
-                "Unable to read Finder/Folderis window bounds. Grant Accessibility "
-                f"permission to the terminal running QA. Detail: {bounds.stderr.strip()}"
-            )
         try:
-            self.crop = recording_crop_from_windows(parse_named_window_rects(bounds.stdout))
+            self.approved_windows = read_recording_windows()
+            self.crop = recording_crop_from_windows(self.approved_windows)
         except ValueError as exc:
             raise QAError(str(exc)) from exc
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -259,13 +356,15 @@ class RecordingManager:
     def start_task(self, task_id: str) -> dict:
         output = self.outputs[task_id]
         recording = {"path": str(output), "status": "recording", "error": None}
-        self.active = ScreenRecorder(output, self.ffmpeg, self.crop)
         try:
+            self.window_preparer(self.approved_windows, self.crop)
+            self.active = ScreenRecorder(output, self.ffmpeg, self.crop)
             self.active.start()
         except BaseException as exc:
             recording["status"] = "ERROR"
             recording["error"] = str(exc)
-            self.active.cleanup()
+            if self.active:
+                self.active.cleanup()
             self.active = None
         return recording
 
