@@ -99,9 +99,68 @@ on run argv
   error "The Finder window approved at recording preflight is no longer available"
 end run
 '''
+TOGGLE_FOLDERIS_PANEL_SCRIPT = r'''
+tell application "System Events"
+  if not (exists process "Folderis") then error "Folderis is not running"
+  tell process "Folderis"
+    repeat with mb in menu bars
+      repeat with statusItem in menu bar items of mb
+        try
+          if (role description of statusItem as text) is "status menu" then
+            perform action "AXPress" of statusItem
+            delay 0.1
+            if exists menu item "显示/隐藏聊天面板" of menu 1 of statusItem then
+              click menu item "显示/隐藏聊天面板" of menu 1 of statusItem
+              return "toggled"
+            end if
+          end if
+        end try
+      end repeat
+    end repeat
+  end tell
+end tell
+error "Folderis status action 显示/隐藏聊天面板 was not found"
+'''
+WINDOW_Z_ORDER_JXA = r'''
+ObjC.import("AppKit");
+ObjC.import("CoreGraphics");
+
+function firstPID(bundleIdentifier) {
+  var apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(bundleIdentifier);
+  return Number(apps.count) ? Number(apps.objectAtIndex(0).processIdentifier) : -1;
+}
+
+var raw = $.CGWindowListCopyWindowInfo(1, 0); // on-screen only, relative to all windows
+var windows = ObjC.castRefToObject(raw);
+var output = [];
+for (var index = 0; index < Number(windows.count); index++) {
+  var item = ObjC.deepUnwrap(windows.objectAtIndex(index));
+  if (item.kCGWindowLayer === 0) {
+    output.push({
+      z: index,
+      owner: item.kCGWindowOwnerName || "",
+      owner_pid: Number(item.kCGWindowOwnerPID),
+      name: item.kCGWindowName || "",
+      number: Number(item.kCGWindowNumber),
+      layer: Number(item.kCGWindowLayer),
+      alpha: Number(item.kCGWindowAlpha),
+      bounds: item.kCGWindowBounds
+    });
+  }
+}
+JSON.stringify({
+  finder_pid: firstPID("com.apple.finder"),
+  folderis_pid: firstPID("com.local.findersidebar.host"),
+  windows: output
+});
+'''
 
 
 class QAError(RuntimeError):
+    pass
+
+
+class WindowOcclusionError(QAError):
     pass
 
 
@@ -148,21 +207,129 @@ def activate_exact_finder_window(finder: Rect) -> None:
         )
 
 
-def prepare_task_recording_windows(
+def toggle_folderis_panel() -> None:
+    toggled = subprocess.run(
+        ["osascript", "-e", TOGGLE_FOLDERIS_PANEL_SCRIPT],
+        capture_output=True,
+        text=True,
+    )
+    if toggled.returncode != 0:
+        raise QAError(
+            "Unable to use Folderis status action 显示/隐藏聊天面板. "
+            f"Detail: {toggled.stderr.strip()}"
+        )
+
+
+def read_window_z_order() -> dict:
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", WINDOW_Z_ORDER_JXA],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise QAError(
+            "Unable to read authoritative on-screen window z-order with CoreGraphics. "
+            f"Detail: {result.stderr.strip()}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+        if (
+            not isinstance(payload.get("windows"), list)
+            or not isinstance(payload.get("finder_pid"), int)
+            or not isinstance(payload.get("folderis_pid"), int)
+        ):
+            raise ValueError("missing PID or window list")
+        return payload
+    except (json.JSONDecodeError, AttributeError, ValueError) as exc:
+        raise QAError(f"CoreGraphics window z-order returned invalid JSON: {exc}") from exc
+
+
+def rect_from_window_layer(window: dict) -> Rect:
+    try:
+        bounds = window["bounds"]
+        return Rect(
+            int(bounds["X"]),
+            int(bounds["Y"]),
+            int(bounds["Width"]),
+            int(bounds["Height"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise QAError(f"CoreGraphics window has invalid bounds: {window!r}") from exc
+
+
+def rects_intersect(first: Rect, second: Rect) -> bool:
+    return (
+        max(first.x, second.x) < min(first.right, second.right)
+        and max(first.y, second.y) < min(first.bottom, second.bottom)
+    )
+
+
+def verify_on_screen_window_coverage(
+    approved_windows: list[tuple[str, Rect]],
+    snapshot: dict,
+) -> None:
+    """Prove the approved pair owns the visible layer-0 pixels in its rectangles."""
+    approved = {name: rect for name, rect in approved_windows}
+    if len(approved_windows) != 2 or set(approved) != {"Finder", "Folderis"}:
+        raise QAError("Visible-content verification needs one approved Finder and Folderis")
+    try:
+        target_pids = {
+            "Finder": snapshot["finder_pid"],
+            "Folderis": snapshot["folderis_pid"],
+        }
+        windows = snapshot["windows"]
+    except (KeyError, TypeError) as exc:
+        raise QAError(f"CoreGraphics snapshot is incomplete: {snapshot!r}") from exc
+    if any(pid <= 0 for pid in target_pids.values()):
+        raise QAError(f"CoreGraphics could not resolve target application PIDs: {target_pids}")
+    targets: dict[str, tuple[int, dict]] = {}
+    for name, target_rect in approved.items():
+        matches = [
+            (index, window)
+            for index, window in enumerate(windows)
+            if window.get("layer") == 0
+            and window.get("owner_pid") == target_pids[name]
+            and rect_from_window_layer(window) == target_rect
+        ]
+        if len(matches) != 1:
+            raise WindowOcclusionError(
+                f"CoreGraphics did not find exactly one on-screen {name} window at "
+                f"{target_rect} (found {len(matches)})"
+            )
+        try:
+            opaque = float(matches[0][1].get("alpha", 0)) >= 1
+        except (TypeError, ValueError):
+            opaque = False
+        if not opaque:
+            raise WindowOcclusionError(
+                f"CoreGraphics cannot prove opaque on-screen {name} content"
+            )
+        targets[name] = matches[0]
+
+    related_pids = set(target_pids.values())
+    for name, (target_index, _) in targets.items():
+        target_rect = approved[name]
+        for covering in windows[:target_index]:
+            if covering.get("layer") != 0 or covering.get("owner_pid") in related_pids:
+                continue
+            covering_rect = rect_from_window_layer(covering)
+            if rects_intersect(target_rect, covering_rect):
+                owner = covering.get("owner") or f"PID {covering.get('owner_pid')}"
+                raise WindowOcclusionError(
+                    f"Unrelated on-screen window {owner!r} is above and intersects the "
+                    f"approved {name} rectangle"
+                )
+
+
+def wait_for_approved_geometry(
     approved_windows: list[tuple[str, Rect]],
     approved_crop: Rect,
     *,
-    activate_finder=activate_exact_finder_window,
     read_windows=read_recording_windows,
     wait=time.sleep,
     attempts: int = 20,
     wait_seconds: float = 0.1,
 ) -> None:
-    """Restore and prove the approved foreground content before one recording."""
-    approved_finders = [rect for name, rect in approved_windows if name == "Finder"]
-    if len(approved_finders) != 1:
-        raise QAError("Recording preflight did not retain exactly one approved Finder window")
-    activate_finder(approved_finders[0])
     approved_geometry = sorted(approved_windows, key=lambda item: item[0])
     last_error = "Folderis panel did not become visible"
     for attempt in range(attempts):
@@ -180,10 +347,89 @@ def prepare_task_recording_windows(
             last_error = str(exc)
         if attempt + 1 < attempts:
             wait(wait_seconds)
-    raise QAError(
-        "Unsafe per-task recording state after reactivating Finder; screencapture "
-        f"was not started. Detail: {last_error}"
-    )
+    raise QAError(last_error)
+
+
+def wait_for_panel_hidden(
+    approved_finder: Rect,
+    *,
+    read_windows=read_recording_windows,
+    wait=time.sleep,
+    attempts: int = 20,
+    wait_seconds: float = 0.1,
+) -> None:
+    last_error = "Folderis panel remained visible"
+    for attempt in range(attempts):
+        current = read_windows()
+        finder = [rect for name, rect in current if name == "Finder"]
+        folderis = [rect for name, rect in current if name == "Folderis"]
+        if finder == [approved_finder] and not folderis:
+            return
+        last_error = (
+            "Folderis panel did not hide cleanly or Finder geometry changed "
+            f"(Finder={finder}, Folderis={folderis})"
+        )
+        if attempt + 1 < attempts:
+            wait(wait_seconds)
+    raise QAError(last_error)
+
+
+def prepare_task_recording_windows(
+    approved_windows: list[tuple[str, Rect]],
+    approved_crop: Rect,
+    *,
+    activate_finder=activate_exact_finder_window,
+    read_windows=read_recording_windows,
+    toggle_panel=toggle_folderis_panel,
+    read_z_order=read_window_z_order,
+    verify_coverage=verify_on_screen_window_coverage,
+    wait=time.sleep,
+    attempts: int = 20,
+    wait_seconds: float = 0.1,
+) -> None:
+    """Restore and prove the approved foreground content before one recording."""
+    approved_finders = [rect for name, rect in approved_windows if name == "Finder"]
+    if len(approved_finders) != 1:
+        raise QAError("Recording preflight did not retain exactly one approved Finder window")
+    activate_finder(approved_finders[0])
+    current_windows = read_windows()
+    if not [rect for name, rect in current_windows if name == "Folderis"]:
+        toggle_panel()
+    try:
+        wait_for_approved_geometry(
+            approved_windows,
+            approved_crop,
+            read_windows=read_windows,
+            wait=wait,
+            attempts=attempts,
+            wait_seconds=wait_seconds,
+        )
+        verify_coverage(approved_windows, read_z_order())
+        return
+    except WindowOcclusionError:
+        # AX geometry can describe a panel that is behind another app. Cycling
+        # the status action is the supported way to order its actual pixels front.
+        toggle_panel()
+        wait_for_panel_hidden(
+            approved_finders[0],
+            read_windows=read_windows,
+            wait=wait,
+            attempts=attempts,
+            wait_seconds=wait_seconds,
+        )
+        activate_finder(approved_finders[0])
+        # Show the panel last. Raising Finder after this point can leave AX
+        # geometry intact while putting the panel's actual pixels behind Orca.
+        toggle_panel()
+        wait_for_approved_geometry(
+            approved_windows,
+            approved_crop,
+            read_windows=read_windows,
+            wait=wait,
+            attempts=attempts,
+            wait_seconds=wait_seconds,
+        )
+        verify_coverage(approved_windows, read_z_order())
 
 
 class ScreenRecorder:
@@ -362,7 +608,14 @@ class RecordingManager:
             self.active.start()
         except BaseException as exc:
             recording["status"] = "ERROR"
-            recording["error"] = str(exc)
+            recording["error"] = (
+                str(exc)
+                if self.active
+                else (
+                    "Unsafe per-task recording state; screencapture was not started. "
+                    f"Detail: {exc}"
+                )
+            )
             if self.active:
                 self.active.cleanup()
             self.active = None

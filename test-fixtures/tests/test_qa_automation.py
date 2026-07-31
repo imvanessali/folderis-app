@@ -34,6 +34,38 @@ def load_module(name, path):
     return module
 
 
+def layer_window(owner_pid, rect, owner, *, alpha=1):
+    return {
+        "owner_pid": owner_pid,
+        "owner": owner,
+        "name": "",
+        "number": owner_pid,
+        "layer": 0,
+        "alpha": alpha,
+        "bounds": {
+            "X": rect.x,
+            "Y": rect.y,
+            "Width": rect.width,
+            "Height": rect.height,
+        },
+    }
+
+
+def coverage_snapshot(approved, *, occluder_position=None):
+    finder = dict(approved)["Finder"]
+    folderis = dict(approved)["Folderis"]
+    target_windows = [
+        layer_window(10, finder, "Finder"),
+        layer_window(20, folderis, "Folderis"),
+    ]
+    occluder = layer_window(30, Rect(0, 0, 1200, 800), "Orca")
+    if occluder_position is not None:
+        target_windows.insert(occluder_position, occluder)
+    else:
+        target_windows.append(occluder)
+    return {"finder_pid": 10, "folderis_pid": 20, "windows": target_windows}
+
+
 class SharedDispatchCaseTests(unittest.TestCase):
     def test_cases_are_shared_and_cover_positive_and_negative_routes(self):
         cases = load_dispatch_cases()
@@ -76,6 +108,15 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         parsed = parse_named_window_rects(result.stdout)
         self.assertTrue(all(name in {"Finder", "Folderis"} for name, _ in parsed))
+
+    @unittest.skipUnless(sys.platform == "darwin", "real JXA parse test requires macOS")
+    def test_real_core_graphics_jxa_compiles_and_returns_parseable_z_order(self):
+        snapshot = self.runner.read_window_z_order()
+        self.assertIsInstance(snapshot["finder_pid"], int)
+        self.assertIsInstance(snapshot["folderis_pid"], int)
+        self.assertIsInstance(snapshot["windows"], list)
+        self.assertTrue(all(window["layer"] == 0 for window in snapshot["windows"]))
+        self.assertTrue(all("bounds" in window for window in snapshot["windows"]))
 
     def test_help_describes_strict_gap_free_recording_area(self):
         result = subprocess.run(
@@ -277,15 +318,19 @@ class RecorderTests(unittest.TestCase):
             approved,
         ])
         waits = []
+        toggles = []
         self.runner.prepare_task_recording_windows(
             approved,
             Rect(40, 50, 960, 700),
             activate_finder=lambda finder: None,
             read_windows=lambda: next(reads),
+            toggle_panel=lambda: toggles.append("toggle"),
+            read_z_order=lambda: coverage_snapshot(approved),
             wait=waits.append,
             attempts=2,
         )
-        self.assertEqual(waits, [0.1])
+        self.assertEqual(waits, [])
+        self.assertEqual(toggles, ["toggle"])
 
     def test_task_window_helper_waits_and_fails_when_panel_is_missing(self):
         approved = [
@@ -305,8 +350,10 @@ class RecorderTests(unittest.TestCase):
                 Rect(40, 50, 960, 700),
                 activate_finder=lambda finder: activation.append(finder),
                 read_windows=lambda: next(reads),
+                toggle_panel=lambda: None,
+                read_z_order=lambda: self.fail("z-order must not run without panel"),
                 wait=lambda seconds: None,
-                attempts=2,
+                attempts=1,
             )
         self.assertEqual(activation, [Rect(100, 50, 900, 700)])
 
@@ -325,9 +372,75 @@ class RecorderTests(unittest.TestCase):
                 Rect(40, 50, 960, 700),
                 activate_finder=lambda finder: None,
                 read_windows=lambda: changed,
+                toggle_panel=lambda: self.fail("changed geometry must not toggle panel"),
+                read_z_order=lambda: self.fail("changed geometry must not read z-order"),
                 wait=lambda seconds: None,
                 attempts=1,
             )
+
+    def test_occluded_panel_is_cycled_off_on_then_accepted_only_when_top(self):
+        approved = [
+            ("Finder", Rect(100, 50, 900, 700)),
+            ("Folderis", Rect(40, 50, 60, 700)),
+        ]
+        hidden = [("Finder", Rect(100, 50, 900, 700))]
+        reads = iter([approved, approved, hidden, approved])
+        z_orders = iter([
+            coverage_snapshot(approved, occluder_position=1),
+            coverage_snapshot(approved),
+        ])
+        activations = []
+        toggles = []
+        recovery_order = []
+
+        def activate(finder):
+            activations.append(finder)
+            recovery_order.append("activate")
+
+        def toggle():
+            toggles.append("toggle")
+            recovery_order.append("toggle")
+
+        self.runner.prepare_task_recording_windows(
+            approved,
+            Rect(40, 50, 960, 700),
+            activate_finder=activate,
+            read_windows=lambda: next(reads),
+            toggle_panel=toggle,
+            read_z_order=lambda: next(z_orders),
+            wait=lambda seconds: None,
+            attempts=1,
+        )
+        self.assertEqual(toggles, ["toggle", "toggle"])
+        self.assertEqual(
+            activations,
+            [Rect(100, 50, 900, 700), Rect(100, 50, 900, 700)],
+        )
+        self.assertEqual(
+            recovery_order, ["activate", "toggle", "activate", "toggle"]
+        )
+
+    def test_unrelated_top_layer_window_is_rejected(self):
+        approved = [
+            ("Finder", Rect(100, 50, 900, 700)),
+            ("Folderis", Rect(40, 50, 60, 700)),
+        ]
+        with self.assertRaisesRegex(
+            self.runner.WindowOcclusionError, "Orca.*above and intersects"
+        ):
+            self.runner.verify_on_screen_window_coverage(
+                approved,
+                coverage_snapshot(approved, occluder_position=0),
+            )
+
+    def test_finder_and_folderis_top_coverage_is_accepted(self):
+        approved = [
+            ("Finder", Rect(100, 50, 900, 700)),
+            ("Folderis", Rect(40, 50, 60, 700)),
+        ]
+        self.runner.verify_on_screen_window_coverage(
+            approved, coverage_snapshot(approved)
+        )
 
     def test_unsafe_task_state_never_constructs_or_starts_screencapture(self):
         approved = [
@@ -353,6 +466,8 @@ class RecorderTests(unittest.TestCase):
                             crop,
                             activate_finder=lambda finder: None,
                             read_windows=lambda: unsafe,
+                            toggle_panel=lambda: None,
+                            read_z_order=lambda: coverage_snapshot(current_approved),
                             wait=lambda seconds: None,
                             attempts=1,
                         )
@@ -367,6 +482,44 @@ class RecorderTests(unittest.TestCase):
                     self.assertEqual(recording["status"], "ERROR")
                     self.assertIn("screencapture was not started", recording["error"])
                     recorder.assert_not_called()
+
+    def test_unprovable_occlusion_never_starts_screencapture(self):
+        approved = [
+            ("Finder", Rect(100, 50, 900, 700)),
+            ("Folderis", Rect(40, 50, 60, 700)),
+        ]
+        hidden = [("Finder", Rect(100, 50, 900, 700))]
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+            self.runner, "ScreenRecorder"
+        ) as recorder:
+            reads = iter([approved, approved, hidden, approved])
+
+            def prepare(current_approved, crop):
+                self.runner.prepare_task_recording_windows(
+                    current_approved,
+                    crop,
+                    activate_finder=lambda finder: None,
+                    read_windows=lambda: next(reads),
+                    toggle_panel=lambda: None,
+                    read_z_order=lambda: coverage_snapshot(
+                        current_approved, occluder_position=1
+                    ),
+                    wait=lambda seconds: None,
+                    attempts=1,
+                )
+
+            directory = Path(temp)
+            manager = self.runner.RecordingManager(
+                directory, directory / "ffmpeg", window_preparer=prepare
+            )
+            manager.approved_windows = approved
+            manager.crop = Rect(40, 50, 960, 700)
+            manager.outputs = {"LD-01": directory / "LD-01-one.mp4"}
+            recording = manager.start_task("LD-01")
+            self.assertEqual(recording["status"], "ERROR")
+            self.assertIn("Orca", recording["error"])
+            self.assertIn("screencapture was not started", recording["error"])
+            recorder.assert_not_called()
 
     def test_output_collisions_are_checked_as_one_preflight(self):
         with tempfile.TemporaryDirectory() as temp:
