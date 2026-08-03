@@ -84,6 +84,40 @@ def render(root: Path, app_version: str, build_version: str) -> dict[Path, str]:
     )
     targets[path] = text
 
+    path, text = read("01-finder-sidebar/project.yml")
+    text = replace_exact(
+        text,
+        r'^        MARKETING_VERSION: "[^"]+"$',
+        f'        MARKETING_VERSION: "{app_version}"',
+        path,
+    )
+    text = replace_exact(
+        text,
+        r'^        CURRENT_PROJECT_VERSION: "[^"]+"$',
+        f'        CURRENT_PROJECT_VERSION: "{build_version}"',
+        path,
+    )
+    targets[path] = text
+
+    for relative in (
+        "01-finder-sidebar/HostApp/Info.plist",
+        "01-finder-sidebar/FinderExtension/Info.plist",
+    ):
+        path, text = read(relative)
+        text = replace_exact(
+            text,
+            r"(<key>CFBundleShortVersionString</key>\s*<string>)[^<]+(</string>)",
+            rf"\g<1>{app_version}\g<2>",
+            path,
+        )
+        text = replace_exact(
+            text,
+            r"(<key>CFBundleVersion</key>\s*<string>)[^<]+(</string>)",
+            rf"\g<1>{build_version}\g<2>",
+            path,
+        )
+        targets[path] = text
+
     path, text = read("win-explorer-sidebar/src/Sider/Sider.csproj")
     text = replace_exact(text, r"<Version>[^<]+</Version>", f"<Version>{app_version}</Version>", path)
     targets[path] = text
