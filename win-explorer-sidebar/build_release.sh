@@ -14,7 +14,7 @@ DEFAULT_APP_VERSION=$(python3 -c 'import json; print(json.load(open("../version.
 DEFAULT_BUILD_VERSION=$(python3 -c 'import json; print(json.load(open("../version.json"))["build_version"])')
 if [ -z "${FOLDERIS_APP_VERSION:-}" ]; then
   echo "" >&2
-  echo "⚠️  FOLDERIS_APP_VERSION 未设置，使用 version.json 默认值 $DEFAULT_APP_VERSION。" >&2
+  echo "⚠️  FOLDERIS_APP_VERSION 未设置，使用 version.json 默认值 ${DEFAULT_APP_VERSION}。" >&2
   echo "   若线上已经是这个版本，版本公告会判定「无更新」，发出去等于没发。" >&2
   echo "   正式发布请显式指定版本号。" >&2
 fi
