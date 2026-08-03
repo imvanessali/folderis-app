@@ -52,9 +52,16 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# 有 Developer ID 证书就用它签：TCC（辅助功能/自动化）按 bundle id + 签名
-# 记授权，与正式版同证书签名可复用已有授权，重建也不用重新勾选。
+# TCC（辅助功能/自动化）按 bundle id + 首次授权时的签名要求记账：
+# ad-hoc 签名的要求按 cdhash 记，每次重建都会作废已有授权，且系统设置里
+# 开关仍显示开启（静默失效）。因此必须始终用 Developer ID 签名——找不到
+# 证书直接报错，绝不回退 ad-hoc。
 DEV_IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/' || true)
-codesign --force --deep --sign "${DEV_IDENTITY:--}" "$APP_BUNDLE"
+if [[ -z "$DEV_IDENTITY" ]]; then
+    echo "error: 未找到 Developer ID Application 证书。" >&2
+    echo "ad-hoc 签名会让辅助功能授权每次重建后静默失效，已禁止回退。" >&2
+    exit 1
+fi
+codesign --force --deep --sign "$DEV_IDENTITY" "$APP_BUNDLE"
 
 echo "Built $APP_BUNDLE"
