@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -653,6 +654,9 @@ class VersionBumpTests(unittest.TestCase):
         "01-finder-sidebar/make_release.sh",
         "01-finder-sidebar/build_app.sh",
         "01-finder-sidebar/FinderSidebar.xcodeproj/project.pbxproj",
+        "01-finder-sidebar/project.yml",
+        "01-finder-sidebar/HostApp/Info.plist",
+        "01-finder-sidebar/FinderExtension/Info.plist",
         "win-explorer-sidebar/src/Sider/Sider.csproj",
         "win-explorer-sidebar/src/Setup/Setup.csproj",
         "win-explorer-sidebar/build_release.sh",
@@ -687,6 +691,19 @@ class VersionBumpTests(unittest.TestCase):
         rerendered = self.bump.render(self.root, "1.2.3", "20260731.4")
         self.assertTrue(all(path.read_text() == content for path, content in rerendered.items()))
         self.assertEqual(first, {path: path.read_bytes() for path in rendered})
+
+    def test_render_synchronizes_xcode_sources(self):
+        rendered = self.bump.render(self.root, "1.2.3", "20260731.4")
+        project = rendered[self.root / "01-finder-sidebar/project.yml"]
+        self.assertIn('MARKETING_VERSION: "1.2.3"', project)
+        self.assertIn('CURRENT_PROJECT_VERSION: "20260731.4"', project)
+        for relative in (
+            "01-finder-sidebar/HostApp/Info.plist",
+            "01-finder-sidebar/FinderExtension/Info.plist",
+        ):
+            info = plistlib.loads(rendered[self.root / relative].encode())
+            self.assertEqual(info["CFBundleShortVersionString"], "1.2.3")
+            self.assertEqual(info["CFBundleVersion"], "20260731.4")
 
     def test_failed_commit_rolls_back_every_target(self):
         rendered = self.bump.render(self.root, "1.2.3", "20260731.4")
