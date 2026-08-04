@@ -3179,6 +3179,69 @@ def _requested_output(request, extensions, inputs):
     return None
 
 
+def _explicit_image_rotation(text):
+    """Return the clockwise angle for an unambiguous rotate-only request.
+
+    The local dispatcher intentionally requires both an explicit angle and an
+    explicit direction.  Requests such as "rotate these" or "rotate 90°" stay
+    with the AI because choosing a direction would change the user's files.
+    """
+    if not re.search(
+            r"(?:旋转|转动|(?:顺时针|逆时针)\s*转|[左右]转|\b(?:rotate|rotation|turn)\b)",
+            text, flags=re.I):
+        return None
+    if any(term in text for term in [
+            "不要", "请勿", "勿", "别", "无需", "不用", "不需要", "不想", "不希望",
+            "取消", "停止", "避免"]):
+        return None
+    if re.search(
+            r"(?:do\s+not|don't|dont|never|stop|without|avoid|"
+            r"no\s+need\s+to|(?:do\s+)?not\s+want\s+to)", text, flags=re.I):
+        return None
+    if any(term in text for term in [
+            "裁剪", "裁成", "crop", "压缩", "compress", "改尺寸", "resize",
+            "转换", "转为", "转成", "convert", "翻转", "镜像", "flip", "mirror",
+            "水印", "watermark", "ocr", "识别文字"]):
+        return None
+
+    counterclockwise_pattern = (
+        r"(?:逆时针|向左(?:旋转|转动)?|左转|counter[\s-]?clockwise|anti[\s-]?clockwise|"
+        r"turn\s+(?:it\s+|them\s+)?left|(?:to|towards?)\s+(?:the\s+)?left)"
+    )
+    counterclockwise = bool(re.search(counterclockwise_pattern, text, flags=re.I))
+    without_counterclockwise = re.sub(counterclockwise_pattern, "", text, flags=re.I)
+    clockwise = bool(re.search(
+        r"(?:顺时针|向右(?:旋转|转动)?|右转|\bclockwise\b|"
+        r"turn\s+(?:it\s+|them\s+)?right|(?:to|towards?)\s+(?:the\s+)?right)",
+        text, flags=re.I))
+    if counterclockwise:
+        clockwise = bool(re.search(
+            r"(?:顺时针|向右(?:旋转|转动)?|右转|\bclockwise\b|"
+            r"turn\s+(?:it\s+|them\s+)?right|(?:to|towards?)\s+(?:the\s+)?right)",
+            without_counterclockwise, flags=re.I))
+    if clockwise == counterclockwise:
+        return None
+
+    angles = {
+        float(value)
+        for value in re.findall(r"(\d+(?:\.\d+)?)\s*(?:°|度|degrees?|deg\b)",
+                                text, flags=re.I)
+    }
+    if re.search(r"(?:四分之一圈|quarter[\s-]+turn)", text, flags=re.I):
+        angles.add(90.0)
+    if re.search(r"(?:半圈|half[\s-]+turn)", text, flags=re.I):
+        angles.add(180.0)
+    if re.search(r"(?:四分之三圈|three[\s-]+quarter[\s-]+turn)", text, flags=re.I):
+        angles.add(270.0)
+    if len(angles) != 1:
+        return None
+    angle = angles.pop()
+    if not 0 < angle < 360:
+        return None
+    clockwise_angle = angle if clockwise else (360 - angle) % 360
+    return int(clockwise_angle) if clockwise_angle.is_integer() else clockwise_angle
+
+
 def _strict_local_plan(request, files):
     """Match only single-purpose tasks with explicit, unambiguous parameters."""
     text = request.strip().lower()
@@ -3211,6 +3274,15 @@ def _strict_local_plan(request, files):
     exts = {p.suffix.lower() for p in paths}
     image_exts = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff", ".bmp"}
     video_exts = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+
+    if exts <= image_exts:
+        angle = _explicit_image_rotation(text)
+        if angle is not None:
+            return {
+                "skill": "img-rotate",
+                "args": [*map(str, paths), "--angle", str(angle)],
+                "stage": f"本地旋转图片（顺时针 {angle}°）",
+            }
 
     if (len(paths) == 1 and exts <= {".xls", ".xlsx", ".xlsm"}
             and any(term in text for term in ["month", "月份", "月份列"])

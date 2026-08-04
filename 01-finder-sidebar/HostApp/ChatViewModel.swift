@@ -462,6 +462,9 @@ final class ChatViewModel: ObservableObject {
                     saveTaskHistory()
                     return
                 }
+                // Cancelling the local dispatcher can leave no result marker.
+                // Do not mistake that for "not matched" and launch an AI CLI.
+                guard !Task.isCancelled else { return }
             }
 
             if usesCLI {
