@@ -35,7 +35,7 @@ def structural_cases() -> list[dict]:
         ("W-28", "Excel工作表拆分", "Test Excel", ["excel-split", "Free_Test_Data_1MB_XLSX.xlsx"], ["Free_Test_Data_1MB_XLSX.xlsx"], {"one_output_per_sheet": True}),
         ("W-29", "Excel按列去重", "Test Excel", ["excel-dedupe", "样例数据.xlsx", "--columns", "2"], ["样例数据.xlsx"], {"columns": [2]}),
         ("W-30", "Excel两表对比", "Test Excel", ["excel-diff", "星辰科技_2025年上半年财务数据.xlsx", "星辰科技_2025年下半年财务数据.xlsx"], ["星辰科技_2025年上半年财务数据.xlsx", "星辰科技_2025年下半年财务数据.xlsx"], {"comparison": "keyed_rows"}),
-        ("W-31", "Excel列拆分", "Test Excel", ["excel-transform", "待拆分示例.xlsx", "--split-column", "1", "--delimiter", "-"], ["待拆分示例.xlsx"], {"split_column": 1, "delimiter": "-"}),
+        ("W-31", "Excel列拆分", "Test Excel", ["excel-transform", "待拆分示例.xlsx", "--split-column", "1", "--delimiter", "-", "--new-names", "姓名,电话"], ["待拆分示例.xlsx"], {"split_column": 1, "delimiter": "-", "new_names": ["姓名", "电话"]}),
         ("W-32", "Excel分组求和", "Test Excel", ["excel-groupby", "样例数据.xlsx", "--by", "5", "--agg", "sum", "--value", "6"], ["样例数据.xlsx"], {"group_by": 5, "aggregation": "sum", "value_column": 6}),
         ("W-33", "Excel按键更新", "Test Excel", ["excel-update-by-key", "--source", "星辰科技_2025年下半年财务数据.xlsx", "--target", "星辰科技_2025年上半年财务数据.xlsx", "--key", "1", "--output", "同比.xlsx"], ["星辰科技_2025年下半年财务数据.xlsx", "星辰科技_2025年上半年财务数据.xlsx"], {"key_column": 1}),
         ("W-34", "CSV预览", "Test Excel", ["csv-preview", "file_example_XLS_100.csv"], ["file_example_XLS_100.csv"], {"preview_only": True}),

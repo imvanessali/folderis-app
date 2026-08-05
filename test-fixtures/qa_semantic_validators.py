@@ -235,12 +235,22 @@ def validate_structural_case(
         evidence = {"source_rows": source.active.max_row, "output_rows": result.active.max_row, "columns": result.active.max_column}
     elif id_ == "W-30":
         assert "仅在 " in stdout and "键相同但内容不同" in stdout
-        evidence = {"comparison_output_characters": len(stdout.strip())}
+        out = _first(outputs, ".xlsx")
+        workbook = _workbook(out)
+        assert workbook.sheetnames == ["汇总", "仅旧表", "仅新表", "内容变化"]
+        evidence = {
+            "comparison_output_characters": len(stdout.strip()),
+            "report": out.name,
+            "sheets": workbook.sheetnames,
+        }
     elif id_ == "W-31":
         out = _first(outputs, ".xlsx")
         source, result = _workbook(inputs[0]), _workbook(out)
-        assert result.active.max_column > source.active.max_column
-        evidence = {"source_columns": source.active.max_column, "output_columns": result.active.max_column}
+        headers = [cell.value for cell in next(result.active.iter_rows(max_row=1))]
+        assert result.active.max_column == source.active.max_column + 1
+        assert headers[:2] == ["姓名", "电话"]
+        evidence = {"source_columns": source.active.max_column,
+                    "output_columns": result.active.max_column, "headers": headers}
     elif id_ == "W-32":
         out = _first(outputs, ".xlsx")
         result = _workbook(out)
@@ -316,14 +326,20 @@ def validate_structural_case(
         assert all(digest in stdout for digest in expected.values()) and not outputs
         evidence = {"algorithm": "md5", "digests": expected}
     elif id_ == "W-46":
+        import pyzipper
         out = _first(outputs, ".zip")
         assert zipfile.is_zipfile(out)
-        with zipfile.ZipFile(out) as archive:
+        with pyzipper.AESZipFile(out) as archive:
             infos = archive.infolist()
             assert infos and all(info.flag_bits & 0x1 for info in infos)
             archive.setpassword(b"abc123")
             assert archive.read(infos[0])
-        evidence = {"format": "ZIP", "encrypted": True, "entries": [info.filename for info in infos]}
+        entries = [info.filename for info in infos]
+        assert all(not Path(entry).is_absolute() and ".." not in Path(entry).parts
+                   for entry in entries)
+        assert all("imvanessali" not in entry.casefold() and "users/" not in entry.casefold()
+                   for entry in entries)
+        evidence = {"format": "ZIP", "encrypted": "AES-256", "entries": entries}
     elif id_ == "W-47":
         out = _first(outputs, ".png")
         with _image(out) as result:

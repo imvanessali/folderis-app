@@ -689,7 +689,6 @@ def resolve_runtime(args: argparse.Namespace) -> tuple[Path, Path, dict[str, str
     else:
         packaged_pythons = [
             Path.home() / "Library" / "Application Support" / "FinderSidebar" / "python" / "bin" / "python3",
-            Path("/Applications/Folderis.app/Contents/Resources/runtime/python/bin/python3.12"),
         ]
         python = args.python or next(
             (candidate for candidate in packaged_pythons if candidate.is_file()),
@@ -732,6 +731,7 @@ def run_command(
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.update(env_extra)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     return subprocess.run(
         [str(python), str(skills), *args],
         cwd=str(cwd),
@@ -850,7 +850,7 @@ def main() -> int:
         )
         collision_payload = parse_dispatch_payload(collision.stdout)
         collision_names = [Path(path).name for path in collision_payload.get("outputs", [])]
-        expected_collision = "michail-sapiton-alCEnNmzhPE-unsplash_2.webp"
+        expected_collision = "michail-sapiton-alCEnNmzhPE-unsplash_converted_2.webp"
         collision_ok = (
             collision_names == [expected_collision]
             and recording_passed(collision_recording)
