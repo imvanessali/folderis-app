@@ -1,5 +1,20 @@
-"""The 47 real-fixture workflows from the established Folderis QA round."""
+"""The 49 real-fixture workflows from the established Folderis QA round."""
 from __future__ import annotations
+
+
+# 多行 payload 二维码 fixture（vCard 名片形态，对应 20260805.3 §6bis 修复）。
+# make_fixtures.py 用它生成 PNG，W-48 的语义 validator 用它做逐字符断言。
+MULTILINE_QR_FIXTURE = "名片二维码_多行.png"
+MULTILINE_QR_PAYLOAD = (
+    "BEGIN:VCARD\n"
+    "VERSION:3.0\n"
+    "FN:筑波 花子\n"
+    "ORG:筑波ホテル\n"
+    "TEL:+81-29-000-0000\n"
+    "EMAIL:hanako@tsukubahotel.jp\n"
+    "URL:http://tsukubahotel.jp/\n"
+    "END:VCARD"
+)
 
 
 def structural_cases() -> list[dict]:
@@ -50,8 +65,10 @@ def structural_cases() -> list[dict]:
         ("W-43", "音频拼接", "Test Audio", ["audio-concat", "clip_a.wav", "clip_b.wav", "--output", "joined.wav"], ["clip_a.wav", "clip_b.wav"], {"expected_duration_seconds": 7}),
         ("W-44", "目录清单Excel", "Test Image", ["dir-inventory", ".", "--output", "../Test Misc/清单.xlsx"], ["."], {"format": "xlsx", "recursive": True}),
         ("W-45", "文件MD5", "Test Image", ["hash-files", "michail-sapiton-alCEnNmzhPE-unsplash.jpg", "marko-brecic-Z9P2g8TuTdA-unsplash.png", "--algo", "md5"], ["michail-sapiton-alCEnNmzhPE-unsplash.jpg", "marko-brecic-Z9P2g8TuTdA-unsplash.png"], {"algorithm": "md5"}),
-        ("W-46", "AES加密压缩包", "Test Misc", ["zip-encrypt", "../Test Image/michail-sapiton-alCEnNmzhPE-unsplash.jpg", "--password", "abc123", "--output", "enc.zip"], ["../Test Image/michail-sapiton-alCEnNmzhPE-unsplash.jpg"], {"password": "abc123", "format": "zip"}),
+        ("W-46", "AES加密压缩包", "Test Misc", ["zip-encrypt", "../Test Image/michail-sapiton-alCEnNmzhPE-unsplash.jpg", "印章.png", "--password", "abc123", "--output", "enc.zip"], ["../Test Image/michail-sapiton-alCEnNmzhPE-unsplash.jpg", "印章.png"], {"password": "abc123", "format": "zip", "utf8_entry": "印章.png"}),
         ("W-47", "生成二维码", "Test Misc", ["qr-make", "https://folderis.app", "--output", "qr.png"], [], {"content": "https://folderis.app", "size": 512}),
+        ("W-48", "二维码多行payload识别", "Test Misc", ["qr-read", MULTILINE_QR_FIXTURE, "--output", "多行二维码识别.xlsx"], [MULTILINE_QR_FIXTURE], {"format": "vCard", "multiline": True, "payload_lines": MULTILINE_QR_PAYLOAD.count("\n") + 1}),
+        ("W-49", "PDF批量转TXT归置Output", "Test PDF", ["pdf-convert", "--files", "ai_agents_handbook_pages_2-5.pdf", "ai_agents_handbook_pages_2-5-v1.1.pdf", "--to", "txt"], ["ai_agents_handbook_pages_2-5.pdf", "ai_agents_handbook_pages_2-5-v1.1.pdf"], {"format": "txt", "batch_inputs": 2, "artifacts_in_versioned_output": True}),
     ]
     return [
         {

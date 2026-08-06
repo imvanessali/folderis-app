@@ -173,13 +173,13 @@ class RecorderTests(unittest.TestCase):
         tasks = self.runner.recording_tasks(
             load_dispatch_cases(), structural_cases(), True
         )
-        self.assertEqual(len(tasks), 69)  # 20 dispatch + 47 structural + collision + cancel
+        self.assertEqual(len(tasks), 71)  # 20 dispatch + 49 structural + collision + cancel
         self.assertEqual(tasks[0][0], "LD-01")
         self.assertIn(("ART-COLLISION", "重复转换碰撞"), tasks)
         self.assertIn(("CANCEL-01", "视频压缩取消"), tasks)
         self.assertEqual(
             [task_id for task_id, _ in tasks if task_id.startswith("W-")],
-            [f"W-{index:02d}" for index in range(1, 48)],
+            [f"W-{index:02d}" for index in range(1, 50)],
         )
         self.assertFalse(any(task_id in {"ART-CROP", "ART-HASH", "ORIGINALS"} for task_id, _ in tasks))
 
@@ -630,10 +630,10 @@ class RecorderTests(unittest.TestCase):
 
 
 class StructuralValidationTests(unittest.TestCase):
-    def test_established_round_has_47_genuine_stable_workflows(self):
+    def test_established_round_has_49_genuine_stable_workflows(self):
         cases = structural_cases()
-        self.assertEqual(len(cases), 47)
-        self.assertEqual([case["id"] for case in cases], [f"W-{index:02d}" for index in range(1, 48)])
+        self.assertEqual(len(cases), 49)
+        self.assertEqual([case["id"] for case in cases], [f"W-{index:02d}" for index in range(1, 50)])
         self.assertTrue(all(case["args"] and case["parameters"] for case in cases))
         validator = (FIXTURES / "qa_semantic_validators.py").read_text(encoding="utf-8")
         for case in cases:

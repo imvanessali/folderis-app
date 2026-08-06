@@ -73,6 +73,15 @@ def main():
     d.text((110, 135), "印章", fill=(200, 30, 30, 230))
     st.save(misc / "印章.png")
 
+    # 多行 payload 二维码（vCard 名片，W-48）：payload 与 validator 同源。
+    try:
+        import qrcode
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from qa_structural_cases import MULTILINE_QR_FIXTURE, MULTILINE_QR_PAYLOAD
+        qrcode.make(MULTILINE_QR_PAYLOAD).save(misc / MULTILINE_QR_FIXTURE)
+    except ImportError:
+        print("提示：未找到 qrcode 库，跳过多行二维码素材（可用已提交的预生成 PNG）")
+
     vid = ROOT / "Test Video"
     (vid / "file_example_MP4_1280_10MG.srt").write_text(
         "1\n00:00:00,000 --> 00:00:01,000\n测试字幕第一行\n\n"

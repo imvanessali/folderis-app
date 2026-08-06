@@ -984,7 +984,7 @@ def main() -> int:
             "digests": digests,
         })
 
-        # Execute the established 47-case real-fixture round. Each row runs one
+        # Execute the established 49-case real-fixture round. Each row runs one
         # built-in skill workflow and receives a command-specific semantic
         # validator; there are no padding/aggregate PASS rows.
         for case in workflow_cases:
@@ -1063,9 +1063,9 @@ def main() -> int:
             })
             print(f"[{status}] {case['id']} {case['label']}")
 
-        if len(structural_results) != 47:
+        if len(structural_results) != 49:
             raise QAError(
-                f"Structural QA definition error: executed {len(structural_results)} rows, expected 47"
+                f"Structural QA definition error: executed {len(structural_results)} rows, expected 49"
             )
 
         if not args.skip_cancellation:
@@ -1123,7 +1123,7 @@ def main() -> int:
         "results": results,
         "structural_validations": structural_results,
         "structural_summary": {
-            "required_executed": 47,
+            "required_executed": 49,
             "executed": len(structural_results),
             "passed": sum(item["status"] == "PASS" for item in structural_results),
             "failed": sum(item["status"] == "FAIL" for item in structural_results),

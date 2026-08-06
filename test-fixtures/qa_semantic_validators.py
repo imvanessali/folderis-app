@@ -339,7 +339,13 @@ def validate_structural_case(
                    for entry in entries)
         assert all("imvanessali" not in entry.casefold() and "users/" not in entry.casefold()
                    for entry in entries)
-        evidence = {"format": "ZIP", "encrypted": "AES-256", "entries": entries}
+        # 非 ASCII 条目名必须带 UTF-8 flag（0x800），否则 Windows 资源管理器乱码。
+        non_ascii = [info for info in infos if not info.filename.isascii()]
+        assert non_ascii, "case must exercise at least one non-ASCII entry name"
+        assert all(info.flag_bits & 0x800 for info in non_ascii), (
+            f"missing UTF-8 flag on {[hex(info.flag_bits) for info in non_ascii]}")
+        evidence = {"format": "ZIP", "encrypted": "AES-256", "entries": entries,
+                    "utf8_flagged_entries": [info.filename for info in non_ascii]}
     elif id_ == "W-47":
         out = _first(outputs, ".png")
         with _image(out) as result:
@@ -347,6 +353,43 @@ def validate_structural_case(
         readback = run_skill(cwd, ["qr-read", str(out)])
         assert readback.returncode == 0 and "https://folderis.app" in readback.stdout
         evidence = {"format": "PNG", "dimensions": [512, 512], "decoded_content": "https://folderis.app"}
+    elif id_ == "W-48":
+        from qa_structural_cases import MULTILINE_QR_PAYLOAD
+        out = _first(outputs, ".xlsx")
+        rows = list(_workbook(out).active.values)
+        recognized = [row for row in rows[1:] if row[2] == "已识别"]
+        assert recognized, "no recognized QR rows in workbook"
+        payloads = [str(row[1]).replace("\r\n", "\n") for row in recognized]
+        assert MULTILINE_QR_PAYLOAD in payloads, (
+            f"multiline payload truncated: got {payloads!r}")
+        matched = recognized[payloads.index(MULTILINE_QR_PAYLOAD)]
+        assert "\n" in str(matched[1]), "xlsx cell lost the payload line breaks"
+        summary = matched[3] if len(matched) > 3 else None
+        assert summary and "vCard" in str(summary) and "筑波 花子" in str(summary), (
+            f"structured parse column missing: {summary!r}")
+        evidence = {
+            "payload_lines": MULTILINE_QR_PAYLOAD.count("\n") + 1,
+            "payload_intact": True,
+            "structured_summary": summary,
+        }
+    elif id_ == "W-49":
+        txts = [path for path in outputs if path.suffix.lower() == ".txt"]
+        assert len(txts) == 2, f"expected 2 batch TXT artifacts, got {len(txts)}"
+        for path in txts:
+            assert path.parent.parent == cwd and path.parent.name.startswith("Output"), (
+                f"batch artifact left outside versioned Output: {path}")
+            text = path.read_text(encoding="utf-8")
+            assert len(text.strip()) > 100 and "第 1 页" in text
+        # 根目录无中间产物残留：本案所有新增文件都必须位于版本化 Output 内。
+        strays = [
+            str(path) for path in outputs
+            if not (path.parent.parent == cwd and path.parent.name.startswith("Output"))
+        ]
+        assert not strays, f"intermediate artifacts left in the root folder: {strays}"
+        evidence = {
+            "batch_outputs": [str(path.relative_to(cwd)) for path in txts],
+            "root_residue": [],
+        }
     else:
         raise AssertionError(f"missing semantic validator for {id_}")
     return evidence

@@ -31,6 +31,9 @@ class PolicySingleSourceTests(unittest.TestCase):
         self.assertGreater(len(policy), 80)
         for term in ["原文件", "Output", "覆盖", "副本"]:
             self.assertIn(term, policy, f"政策段缺少关键语义：{term}")
+        # A3（20260805.3 case23/28/55）：归置进 Output 必须是移动，根目录零残留。
+        for term in ["移动（move）", "不得残留"]:
+            self.assertIn(term, policy, f"政策段缺少归置语义：{term}")
 
     def test_backend_prompts_keep_only_pointers(self):
         for src in (MAC_VM, WIN_PANEL):

@@ -140,6 +140,26 @@ run("W-48","二维码识别", OTH, ["qr-read","qr.png"])
 run("W-49","转Markdown", OTH, ["doc-to-markdown",str((XLS/"样例数据.xlsx").resolve())])
 run("W-50","doc-diff", PDF, ["doc-diff","ai_agents_handbook_pages_2-5.pdf","ai_agents_handbook_pages_2-5-v1.1.pdf"])
 
+# 多行 payload 二维码（与 macOS W-48 结构化用例同一 fixture/断言口径）:
+# xlsx 单元格必须保留完整多行 vCard 文本，缺行即 FAIL。
+run("W-51","二维码多行payload识别", OTH, ["qr-read","名片二维码_多行.png","--output","多行二维码识别.xlsx"], "多行二维码识别.xlsx")
+_t0 = time.time()
+_check = subprocess.run([str(PY), "-c", (
+    "import sys, openpyxl\n"
+    "sys.path.insert(0, sys.argv[2])\n"
+    "from qa_structural_cases import MULTILINE_QR_PAYLOAD\n"
+    "rows = list(openpyxl.load_workbook(sys.argv[1]).active.values)\n"
+    "payloads = [str(r[1]).replace('\\r\\n','\\n') for r in rows[1:] if r[2] == '已识别']\n"
+    "sys.exit(0 if MULTILINE_QR_PAYLOAD in payloads else 1)\n"
+), str(OTH/"多行二维码识别.xlsx"), str(FIXTURES)], capture_output=True, text=True)
+_st = "PASS" if _check.returncode == 0 else "FAIL"
+results.append(dict(id="W-51v", instr="多行payload完整落入xlsx", status=_st,
+                    elapsed=round(time.time()-_t0,2), note=(_check.stderr or "")[-250:]))
+print(f"[{_st}] W-51v 多行payload完整落入xlsx")
+
+# pdf-convert --files 批量转 TXT（20260805.3 case28 内部错误回归）
+run("W-52","PDF批量转TXT", PDF, ["pdf-convert","--files","ai_agents_handbook_pages_2-5.pdf","ai_agents_handbook_pages_2-5-v1.1.pdf","--to","txt"])
+
 p = sum(1 for r in results if r["status"]=="PASS")
 f = len(results) - p
 print(f"\n通过 {p} / 失败 {f} / 合计 {len(results)}")
