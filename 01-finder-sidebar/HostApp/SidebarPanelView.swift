@@ -56,6 +56,9 @@ struct SidebarPanelView: View {
                     }
                     Spacer()
                 }
+                // 同名文件夹/文件（母本、副本、手动拷贝）在面板上无法区分，
+                // 悬停显示完整路径以便确认绑定的是哪一份。
+                .help(chat.boundSelection.map(\.path).joined(separator: "\n"))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 Divider()
@@ -157,14 +160,20 @@ struct SidebarPanelView: View {
     }
 
     private var bindingTypeLabel: String {
-        if chat.boundSelection.count > 1 {
-            return L("已绑定多个项目", "Multiple items bound")
-        }
         guard let selected = chat.boundSelection.first else { return "" }
-        let isDirectory = (try? selected.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
-        return isDirectory
-            ? L("已绑定文件夹", "Folder bound")
-            : L("已绑定文件", "File bound")
+        let kind: String
+        if chat.boundSelection.count > 1 {
+            kind = L("已绑定多个项目", "Multiple items bound")
+        } else {
+            let isDirectory = (try? selected.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            kind = isDirectory
+                ? L("已绑定文件夹", "Folder bound")
+                : L("已绑定文件", "File bound")
+        }
+        // 附上所在目录：同名对象（母本/副本/手动拷贝）仅靠名字无法区分。
+        let parent = selected.deletingLastPathComponent().path
+            .replacingOccurrences(of: NSHomeDirectory(), with: "~")
+        return kind + " · " + parent
     }
 }
 

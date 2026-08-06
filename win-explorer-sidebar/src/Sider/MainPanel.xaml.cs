@@ -1534,8 +1534,8 @@ public partial class MainPanel : Window
             处理任务的方式：
             - 严格遵守用户指定的对象、页码、数量和输出格式，只做完成请求必需的操作；用户只问一页就只处理该页，绝不能擅自扩展为整个文件或所有页面。
             - 用户消息中列出的“选中/附上的文件”就是本次任务的全部输入范围：任务描述没有点名对象时，对象就是这些文件，而不是所在文件夹；绝不能因为文件夹里其他文件相似、或“批量处理更一致”而扩大到列表之外。
-            - 用户只要求查看、读取、分析或回答内容时，直接在聊天中返回结果，不创建文件。只有用户明确说保存、导出或生成文件时才创建对应的最终文件。
-            - 使用 run_skill 生成产物时，默认保留原文件和每一次历史产物，本次结果必须使用唯一的新文件名；相同任务重复执行要自动使用 _2、_3 等名称，即使用户指定 --output 也不代表允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖；只有用户明确要求“覆盖原文件/原地修改”时，才可传 --overwrite-original，涉及 --in-place 时必须同时传两者。禁止把 --output 指向输入文件。
+            - 用户只要求查看、读取、分析或回答内容时，直接在聊天中返回结果，不创建文件。转换、压缩、OCR、转写、总结为纪要、差异对比、二维码识别、重命名或去重等动作本身就要求生成可交付文件，聊天文字不能替代产物。
+            - 产物的保留、命名、目录去向、覆盖边界与删除/去重安全要求，一律以上方技能目录开头的「全局产物规则」为准；run_skill 传参同样受其约束（--overwrite-original/--in-place 只在用户明确要求覆盖时使用，禁止把 --output 指向输入文件）。
             - 不创建用户没要求的副本、拆分页、逐页图片、全量文本或其他衍生物。工具确需中间文件时只能放系统临时目录，并在结束前清理。
             - 如果目标范围不明确且不同理解会产生不同文件或批量操作，先问一个简短的澄清问题，不要自行选择最大范围。
             - 提取 PDF 文字必须用 pdf-ocr；传入用户指定的 --pages。未要求保存时不要传 --output，也不要先调用 PDF 拆分或转图片技能。
@@ -1585,6 +1585,17 @@ public partial class MainPanel : Window
                             $"已通过内置技能完成，没有调用 AI，也没有覆盖原文件。\n技能：{skill} · {elapsed:F2} 秒\n结果文件：\n{string.Join("\n", paths)}",
                             $"Completed with a built-in skill without calling AI or overwriting the originals.\nSkill: {skill} · {elapsed:F2}s\nOutput:\n{string.Join("\n", paths)}");
                     }
+                    else if ((bool?)local["success"] == true
+                             && ((string?)local["details"])?.Trim() is { Length: > 0 } info)
+                    {
+                        // 信息查询类技能（csv-preview/qr-read/hash 检测等）成功但天然
+                        // 不产文件：答案在 details 里，不能包装成“未完成”（与 macOS 对齐）。
+                        var skill = (string?)local["skill"] ?? "local";
+                        var elapsed = (double?)local["elapsed"] ?? 0;
+                        reply = L10n.T(
+                            $"已通过内置技能完成，没有调用 AI（信息查询，无新文件）。\n技能：{skill} · {elapsed:F2} 秒\n{info}",
+                            $"Completed with a built-in skill without calling AI (informational; no new files).\nSkill: {skill} · {elapsed:F2}s\n{info}");
+                    }
                     else
                     {
                         var detail = ((string?)local["details"])?.Trim();
@@ -1614,15 +1625,23 @@ public partial class MainPanel : Window
                     _ => CliBackend.DetectPath("claude")
                 }
                     ?? throw new InvalidOperationException(L10n.T($"未检测到 {_settings.Backend} CLI", $"{_settings.Backend} CLI not found"));
+                // 单一来源 fail-safe：产物政策只经 catalog（技能简报）送达 CLI。
+                // 加载不到完整政策段时拒绝执行，绝不无政策裸跑文件任务。
+                if (string.IsNullOrEmpty(SkillRunner.CliSkillsBrief) || SkillRunner.SharedArtifactPolicy is null)
+                    throw new InvalidOperationException(L10n.T(
+                        "技能运行时损坏或缺失（无法加载「全局产物规则」），文件处理已停用。请重新安装应用或修复技能组件。",
+                        "The skills runtime is missing or corrupted (global artifact policy unavailable), so file processing is disabled. Reinstall the app or repair the skills component."));
+                // CLI 后端专属增量。产物去向/碰撞/覆盖/删除安全等共享政策不在此重复：
+                // 唯一来源是 catalog.txt 的「全局产物规则」段（经技能简报送达，与 macOS cliScopePolicy 对齐）。
                 var cliPrompt =
                     "执行边界：严格按用户指定的文件、页码、数量和格式处理，不擅自扩大为全量或批量。" +
                     "用户消息中列出的选中/附上文件就是本次任务的全部输入范围：任务未点名对象时即以这些文件为对象，绝不能因为同文件夹其他文件相似或批量处理更一致而扩大到列表之外。" +
-                    "只要求查看或回答内容时直接回复，不创建文件；只有明确要求保存或导出时才生成最终文件。" +
-                    "凡是文件处理产物，默认保留原文件和每一次历史产物，并把本次结果另存为唯一的新文件；相同任务重复执行也必须生成 _2、_3 等新名称，用户指定输出名不等于允许覆盖。确认输出名是否冲突时，只检查候选文件名本身是否已存在，不要列目录、不要查看范围外的其他文件。普通的处理、优化、压缩或转换不代表允许覆盖，只有用户明确说覆盖原文件或原地修改时才可覆盖。" +
-                    "不得创建未要求的副本、拆分页、逐页图片或全量文本；必要中间文件必须放在 %TEMP%，不得在用户文件夹内创建 tmp 或 output 工作目录，并在结束前清理。" +
+                    "只要求查看或回答内容时直接回复，不创建文件；转换、压缩、OCR、转写、总结为纪要、差异对比、二维码识别、重命名或去重等动作本身就要求生成可交付文件，聊天文字不能替代产物。" +
+                    "产物的保留、命名、目录去向、覆盖边界与删除/去重安全要求，一律以技能目录开头的「全局产物规则」为准；用户指定输出名不等于允许覆盖。" +
+                    "不得创建未要求的副本、拆分页、逐页图片或全量文本；必要中间文件必须放在 %TEMP%，不得在用户文件夹内创建 tmp 或 output 工作目录，并在结束前清理，最终多产物 Output 不属于临时目录。" +
                     "范围歧义会导致不同产物时先简短询问。提取 PDF 文字必须逐页 OCR，且只 OCR 用户指定页码。" +
                     "不要把计划、准备步骤或我先做什么当作最终回复；必须实际完成任务并验证最终文件后再结束，无法完成时明确说明失败原因。" +
-                    "回复必须精简：只说结论和结果文件路径，不复述目录内容、检查过程或中间步骤。\n\n" +
+                    "回复必须精简并明确列出最终文件或 Output 完整路径。\n\n" +
                     $"任务编号：{taskId}\n用户请求：\n" + apiText;
                 var completedSessionId = await _cliBackend.RunAsync(
                     kind, cli, cliPrompt, workRoot ?? Environment.CurrentDirectory,
@@ -1645,6 +1664,12 @@ public partial class MainPanel : Window
                 SaveConversation(conv);
                 return;
             }
+            // 单一来源 fail-safe：内置代理循环的产物政策同样只来自 catalog
+            // （system prompt 整段注入）。政策缺失即拒绝，避免无政策裸跑。
+            if (SkillRunner.SharedArtifactPolicy is null)
+                throw new InvalidOperationException(L10n.T(
+                    "技能运行时损坏或缺失（无法加载「全局产物规则」），文件处理已停用。请重新安装应用或修复技能组件。",
+                    "The skills runtime is missing or corrupted (global artifact policy unavailable), so file processing is disabled. Reinstall the app or repair the skills component."));
             await _agent.CompactIfNeededAsync(conv.History, _cts.Token);
             await _agent.RunAsync(
                 conv.History, systemPrompt,

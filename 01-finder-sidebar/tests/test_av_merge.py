@@ -113,12 +113,68 @@ class AvMergeTests(unittest.TestCase):
         self.assertEqual(self.audio_channels(out), 2)
         self.assertGreater(self.duration(out), 1.5)
 
+    def test_failed_compress_does_not_publish_partial_output(self):
+        clip = self.make_clip("cancelled.mp4", "30")
+        fake_ffmpeg = self.folder / "fake-ffmpeg"
+        fake_ffmpeg.write_text(
+            "#!/bin/sh\n"
+            "for last do :; done\n"
+            "printf partial > \"$last\"\n"
+            "exit 9\n",
+            encoding="utf-8",
+        )
+        fake_ffmpeg.chmod(0o755)
+        task_id = "cancel-regression"
+
+        result = subprocess.run(
+            [sys.executable, str(SKILLS), "av-compress", clip.name, "--crf", "28"],
+            cwd=self.folder,
+            env={
+                **os.environ,
+                "FS_FFMPEG": str(fake_ffmpeg),
+                "FS_FFPROBE": str(FFPROBE),
+                "FOLDERIS_TASK_ID": task_id,
+            },
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.folder / "cancelled_small.mp4").exists())
+        self.assertFalse(
+            (Path(tempfile.gettempdir()) / f"folderis-{task_id}-cancelled_small.mp4").exists()
+        )
+
     def test_convert_downmixes_surround_audio(self):
         clip = self.make_51_clip("surround.mov")
         self.run_skill("av-convert", clip.name, "--to", "mp4")
         out = self.folder / "surround.mp4"
         self.assertTrue(out.exists())
         self.assertEqual(self.audio_channels(out), 2)
+
+    def test_odd_width_video_converts_and_trims_to_even_dimensions(self):
+        source = self.folder / "odd.mov"
+        subprocess.run(
+            [str(FFMPEG), "-y", "-f", "lavfi",
+             "-i", "testsrc=duration=2:size=321x240:rate=24",
+             "-c:v", "libx264", "-pix_fmt", "yuv444p", str(source)],
+            check=True,
+            capture_output=True,
+        )
+
+        self.run_skill("av-convert", source.name, "--to", "mp4")
+        self.run_skill("av-trim", source.name, "--start", "0", "--end", "1")
+
+        for output in (self.folder / "odd.mp4", self.folder / "odd_clip.mov"):
+            probe = subprocess.run(
+                [str(FFPROBE), "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height", "-of", "json", str(output)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            stream = json.loads(probe.stdout)["streams"][0]
+            self.assertEqual((stream["width"], stream["height"]), (320, 240))
 
     def dispatch(self, request, *files):
         result = self.run_skill("local-dispatch", "--request", request,

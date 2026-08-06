@@ -39,7 +39,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key>
     <string>1.1.0</string>
     <key>CFBundleVersion</key>
-    <string>20260803.2</string>
+    <string>20260805.3</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>

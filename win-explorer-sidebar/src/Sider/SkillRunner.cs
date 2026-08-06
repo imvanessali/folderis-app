@@ -79,6 +79,48 @@ public sealed class SkillRunner
         return File.Exists(p) ? File.ReadAllText(p) : "";
     }
 
+    /// <summary>共享产物政策的唯一来源标记（与 macOS 端 artifactPolicyMarker 对齐）：
+    /// catalog.txt 中以该标记开头的整段。按标记提取而非物理行号。</summary>
+    public const string ArtifactPolicyMarker = "全局产物规则：";
+
+    /// <summary>null 意味着技能运行时损坏——按约定拒绝文件处理而不是无政策裸跑。</summary>
+    public static string? SharedArtifactPolicy => ExtractArtifactPolicy(Catalog);
+
+    public static string? ExtractArtifactPolicy(string catalog)
+    {
+        var index = catalog.IndexOf(ArtifactPolicyMarker, StringComparison.Ordinal);
+        if (index < 0) return null;
+        var end = catalog.IndexOf('\n', index);
+        var policy = (end < 0 ? catalog[index..] : catalog[index..end]).Trim();
+        // 语义完整性下限：防止截断/损坏的 catalog 提供半句政策。
+        string[] required = ["原文件", "Output", "覆盖", "副本"];
+        if (policy.Length <= 80 || required.Any(t => !policy.Contains(t))) return null;
+        return policy;
+    }
+
+    /// <summary>CLI 后端的技能简报：外部代理没有内置工具循环，必须显式告知内置技能
+    /// 的调用方式与组件安装的同意边界，否则会徒手重写技能甚至擅自安装系统软件
+    /// （与 macOS 端 ChatViewModel.cliSkillsBrief 对齐）。</summary>
+    public static string CliSkillsBrief
+    {
+        get
+        {
+            var catalog = Catalog;
+            if (string.IsNullOrWhiteSpace(catalog) ||
+                !File.Exists(PythonExe) || !File.Exists(Toolbox)) return "";
+            var bin = Path.Combine(ActiveRuntimeRoot, "bin");
+            var binLine = Directory.Exists(bin)
+                ? $"专用工具目录（ffmpeg 等已下载组件）已加入 PATH：{bin}\n"
+                : "";
+            return
+                "Folderis 内置技能工具箱：涉及下列技能覆盖的文件处理时必须优先调用，禁止另写脚本重复实现，" +
+                "也禁止未经用户明确同意安装任何系统软件（winget/pip/npm 等同样受限；可选组件一律先征求用户同意，经 install-component 安装）。\n" +
+                "调用方式（终端中执行，cwd 即任务文件夹）：\n" +
+                $"\"{PythonExe}\" \"{Toolbox}\" <技能名> <参数…>\n" +
+                binLine + catalog;
+        }
+    }
+
     /// <summary>OpenAI function-calling 的工具声明：单一 run_skill 入口。</summary>
     public static readonly JsonArray ToolSchema = new(
         new JsonObject

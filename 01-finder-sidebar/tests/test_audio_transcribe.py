@@ -196,6 +196,39 @@ class AudioTranscribeTests(unittest.TestCase):
             self.assertEqual(user_file.read_text(encoding="utf-8"), "keep")
             self.assertTrue((support / "components" / "sensevoice-small" / "NOTICE.txt").exists())
 
+    def test_segment_ranges_prefer_silence_and_overlap_only_hard_cuts(self):
+        detected = "\n".join([
+            "[silencedetect] silence_start: 43.0",
+            "[silencedetect] silence_end: 44.0 | silence_duration: 1.0",
+            "[silencedetect] silence_start: 92.0",
+            "[silencedetect] silence_end: 93.0 | silence_duration: 1.0",
+        ])
+        ranges = self.skills._audio_segment_ranges(120.0, detected)
+        self.assertEqual(ranges[0], (0.0, 43.5, False))
+        self.assertEqual(ranges[1], (43.5, 92.5, False))
+        self.assertEqual(ranges[2], (92.5, 120.0, False))
+
+        short = self.skills._audio_segment_ranges(
+            33.0, "silence_start: 10.0\nsilence_end: 11.0")
+        self.assertEqual(short, [(0.0, 10.5, False), (10.5, 33.0, False)])
+
+        hard = self.skills._audio_segment_ranges(70.0, "")
+        self.assertEqual(hard[0], (0.0, 50.0, False))
+        self.assertEqual(hard[1], (49.7, 70.0, True))
+
+    def test_hard_cut_word_overlap_is_removed(self):
+        previous = "alpha beta gamma delta epsilon zeta eta"
+        current = "gamma delta epsilon zeta eta theta iota"
+        self.assertEqual(self.skills._dedupe_overlap(previous, current), "theta iota")
+
+    def test_no_speech_errors_are_skippable_but_real_failures_are_not(self):
+        self.assertTrue(self.skills._is_no_speech_error(
+            "转写失败：No speech detected"))
+        self.assertTrue(self.skills._is_no_speech_error(
+            "Speech recognition error 1110"))
+        self.assertFalse(self.skills._is_no_speech_error(
+            "network connection was lost"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -87,13 +87,13 @@ class OutputVersioningTests(unittest.TestCase):
         )
 
         self.skills.cmd_txt_clean(args)
-        first = self.folder / "notes_clean.txt"
+        first = self.folder / "notes_cleaned.txt"
         first_bytes = first.read_bytes()
         self.skills.cmd_txt_clean(args)
 
         self.assertEqual(source.read_text(encoding="utf-8"), "line 1  \n\n\nline 2\n")
         self.assertEqual(first.read_bytes(), first_bytes)
-        self.assertTrue((self.folder / "notes_clean_2.txt").exists())
+        self.assertTrue((self.folder / "notes_cleaned_2.txt").exists())
 
     def test_split_archive_family_avoids_existing_parts(self):
         first_part = self.folder / "archive.7z.001"
@@ -162,7 +162,7 @@ class OutputVersioningTests(unittest.TestCase):
         )
         self.skills.cmd_docx_fill(args)
 
-        output_dir = self.folder / "template_filled"
+        output_dir = self.folder / "Output"
         first = output_dir / "template_same.docx"
         second = output_dir / "template_same_2.docx"
         self.assertTrue(first.exists())

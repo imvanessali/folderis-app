@@ -66,13 +66,16 @@ class LocalImageRotationTests(unittest.TestCase):
             {Path(path).name for path in payload["outputs"]},
             {f"selected-{index}_rotated.png" for index in range(4)},
         )
+        # 多产物按全局产物政策统一进入版本化 Output 目录。
+        output_dir = self.folder / "Output"
         for source in self.selected:
             self.assertEqual(source.read_bytes(), self.originals[source])
             with Image.open(source) as original, Image.open(
-                    source.with_name(source.stem + "_rotated.png")) as rotated:
+                    output_dir / (source.stem + "_rotated.png")) as rotated:
                 self.assertEqual(rotated.size, (original.height, original.width))
         self.assertEqual(self.unselected.read_bytes(), self.originals[self.unselected])
         self.assertFalse((self.folder / "not-selected_rotated.png").exists())
+        self.assertFalse((output_dir / "not-selected_rotated.png").exists())
 
     def test_english_clockwise_90_is_a_deterministic_builtin_plan(self):
         for request in [

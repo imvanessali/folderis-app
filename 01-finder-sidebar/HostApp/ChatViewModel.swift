@@ -371,8 +371,9 @@ final class ChatViewModel: ObservableObject {
 
         let taskID = nextTaskID()
         let referencedTask = referencedTaskContext(in: text)
-        let files = attachedFiles
-        registerTask(taskID, text: text)
+        let files = Self.normalizeSelection(attachedFiles)
+        let effectiveFolder = Self.taskWorkingDirectory(boundFolder: boundFolder, attachments: files)
+        registerTask(taskID, text: text, folder: effectiveFolder, selection: files)
         if !usesCLI,
            !settings.provider.supportsVision,
            let notice = Self.deepSeekCapabilityNotice(request: text, files: files) {
@@ -394,8 +395,8 @@ final class ChatViewModel: ObservableObject {
         isSending = true
         elapsedSeconds = 0
         // 捕获任务的工作目录与选中集：此后显示切到哪个绑定都不影响本任务。
-        taskFolder = boundFolder
-        taskSelection = boundSelection
+        taskFolder = effectiveFolder
+        taskSelection = files
 
         // CLI 后端（Claude Code 能自己读图）不做视觉降级。
         let allowImages = usesCLI || settings.provider.supportsVision
@@ -422,7 +423,8 @@ final class ChatViewModel: ObservableObject {
             // File reading and image re-encoding can be slow (large photos),
             // so it runs off the main actor to keep the panel responsive.
             let prepared = await Task.detached(priority: .userInitiated) {
-                Self.prepareAttachments(files, allowImages: allowImages && !usesCLI)
+                Self.prepareAttachments(files, allowImages: allowImages && !usesCLI,
+                                        cliReadsFiles: usesCLI)
             }.value
 
             // 文件上下文只送给模型，不在气泡里复读（用户自己选的文件）。
@@ -452,6 +454,17 @@ final class ChatViewModel: ObservableObject {
                             "已通过内置技能完成，没有调用 AI，也没有覆盖原文件。\n技能：\(skill) · \(elapsed) 秒\n结果文件：\n\(paths)",
                             "Completed with a built-in skill without calling AI or overwriting the originals.\nSkill: \(skill) · \(elapsed)s\nOutput:\n\(paths)"
                         )
+                    } else if local.success == true,
+                              let detail = local.details?.trimmingCharacters(in: .whitespacesAndNewlines),
+                              !detail.isEmpty {
+                        // 信息查询类技能（csv-preview/qr-read/hash 检测等）成功但天然
+                        // 不产文件：答案在 details 里，不能包装成“未完成”。
+                        let skill = local.skill ?? "local"
+                        let elapsed = String(format: "%.2f", local.elapsed ?? 0)
+                        reply = L(
+                            "已通过内置技能完成，没有调用 AI（信息查询，无新文件）。\n技能：\(skill) · \(elapsed) 秒\n\(detail)",
+                            "Completed with a built-in skill without calling AI (informational; no new files).\nSkill: \(skill) · \(elapsed)s\n\(detail)"
+                        )
                     } else {
                         let detail = local.details?.trimmingCharacters(in: .whitespacesAndNewlines)
                         reply = L("内置技能未完成：\(detail?.isEmpty == false ? detail! : "未知错误")",
@@ -477,6 +490,14 @@ final class ChatViewModel: ObservableObject {
                     reportTaskError(describe(error))
                 }
             } else {
+                // 单一来源 fail-safe：内置代理循环的产物政策同样只来自 catalog
+                // （system prompt 整段注入）。政策缺失即拒绝，避免无政策裸跑。
+                guard Self.sharedArtifactPolicy != nil else {
+                    reportTaskError(L(
+                        "技能运行时损坏或缺失（无法加载「全局产物规则」），文件处理已停用。请重新安装应用或修复技能组件。",
+                        "The skills runtime is missing or corrupted (global artifact policy unavailable), so file processing is disabled. Reinstall the app or repair the skills component."))
+                    return
+                }
                 // Auto-compact: summarize old turns when the conversation grows
                 // too large, so long sessions don't blow the context window.
                 do {
@@ -594,7 +615,8 @@ final class ChatViewModel: ObservableObject {
 
     nonisolated private static func prepareAttachments(
         _ files: [URL],
-        allowImages: Bool
+        allowImages: Bool,
+        cliReadsFiles: Bool = false
     ) -> (images: [ImageAttachment], descriptions: [String]) {
         var images: [ImageAttachment] = []
         var descriptions: [String] = []
@@ -603,7 +625,11 @@ final class ChatViewModel: ObservableObject {
                 images.append(image)
                 descriptions.append("图片 `\(url.path)`（见附图）")
             } else if !allowImages && isImageFile(url) {
-                descriptions.append("图片 `\(url.path)`（当前模型不支持理解图片画面内容；但压缩、格式转换、改尺寸、加水印、OCR 等文件级操作照常可用，请正常调用相应技能。只有当用户要求你描述/理解画面内容时，才说明当前模型无法看图。）")
+                // CLI 代理（Claude Code 等）能按路径自行读图，不能沿用
+                // “模型不支持看图”的降级话术，否则会错误拒绝视觉类任务。
+                descriptions.append(cliReadsFiles
+                    ? "图片 `\(url.path)`（需要查看画面内容时可直接读取该文件）"
+                    : "图片 `\(url.path)`（当前模型不支持理解图片画面内容；但压缩、格式转换、改尺寸、加水印、OCR 等文件级操作照常可用，请正常调用相应技能。只有当用户要求你描述/理解画面内容时，才说明当前模型无法看图。）")
             } else {
                 descriptions.append(describeFile(url))
             }
@@ -746,16 +772,32 @@ final class ChatViewModel: ObservableObject {
         "任务描述没有点名对象时，对象就是这些文件，而不是所在文件夹；" +
         "除非用户明确要求，绝不能把操作扩大到范围之外的其他文件，即使它们相似或适用同样的操作：\n\n"
 
+    /// 测试专用只读入口：断言 CLI 提示词不内嵌共享政策正文。
+    nonisolated static var cliScopePolicyForTesting: String { cliScopePolicy }
+
+    /// CLI 后端专属增量。产物去向/碰撞/覆盖/删除安全等共享政策不在此重复：
+    /// 唯一来源是 catalog.txt 的「全局产物规则」段，经技能简报送达（缺失即拒绝执行）。
     private static let cliScopePolicy = """
-    执行边界：严格按用户指定的文件、页码、数量和格式处理，不擅自扩大为全量或批量。用户消息中列出的选中/附上文件就是本次任务的全部输入范围：任务未点名对象时即以这些文件为对象，绝不能因为同文件夹其他文件相似或“批量处理更一致”而扩大到列表之外。只要求查看/回答内容时直接回复，不创建文件；只有明确要求保存/导出时才生成最终文件。凡是文件处理产物，默认保留原文件和每一次历史产物，并把本次结果另存为唯一的新文件；相同任务重复执行也必须生成 _2、_3 等新名称，用户指定输出名不等于允许覆盖。确认输出名是否冲突时，只检查候选文件名本身是否已存在，不要列目录、不要查看范围外的其他文件。普通的“处理/优化/压缩/转换”不代表允许覆盖，只有用户明确说“覆盖原文件/原地修改”时才可覆盖。不得创建未要求的副本、拆分页、逐页图片或全量文本；必要中间文件必须放在操作系统临时目录（macOS 使用 /tmp 或 NSTemporaryDirectory，Windows 使用 %TEMP%），不得在用户文件夹内创建 tmp/output 等工作目录，并在结束前清理。范围歧义会导致不同产物时先简短询问。提取 PDF 文字必须逐页 OCR，且只 OCR 用户指定页码。不要把计划、准备步骤或“我先……”当作最终回复；必须实际完成任务并验证最终文件后再结束，无法完成时明确说明失败原因。回复必须精简：只说结论和结果文件路径，不复述目录内容、检查过程或中间步骤。
+    执行边界：严格按用户指定的文件、页码、数量和格式处理，不擅自扩大为全量或批量。用户消息中列出的选中/附上文件就是本次任务的全部输入范围：任务未点名对象时即以这些文件为对象，绝不能因为同文件夹其他文件相似或“批量处理更一致”而扩大到列表之外。只要求查看/回答内容时直接回复，不创建文件；转换、压缩、OCR、转写、总结为纪要、差异对比、二维码识别、重命名或去重等动作本身就要求生成可交付文件，聊天文字不能替代产物。产物的保留、命名、目录去向、覆盖边界与删除/去重安全要求，一律以技能目录开头的「全局产物规则」为准；用户指定输出名不等于允许覆盖。不得创建未要求的副本、拆分页、逐页图片或全量文本；必要中间文件必须放在操作系统临时目录并在结束前清理，最终多产物 Output 不属于临时目录。范围歧义会导致不同产物时先简短询问。提取 PDF 文字必须逐页 OCR，且只 OCR 用户指定页码。不要把计划、准备步骤或“我先……”当作最终回复；必须实际完成任务并验证最终文件后再结束。回复必须精简并明确列出最终文件或 Output 完整路径。
     """
 
     func runCLIBackendTurn(userMessage: ChatMessage) async throws {
         let bubbleID = startBubble()
         defer { finishBubble(bubbleID) }
 
-        let prompt = Self.cliScopePolicy + "\n\n用户请求：\n" + Self.apiText(of: userMessage)
         let backend = settings.backend
+        // Claude Code 经 --append-system-prompt 注入技能简报；codex/cursor 无对应
+        // 参数，简报并入提示词开头，保证三个后端看到同一份技能边界。
+        let skillsBrief = Self.cliSkillsBrief
+        // 单一来源 fail-safe：产物政策只经 catalog（技能简报）送达。加载不到
+        // 完整政策段时按约定拒绝执行，绝不允许无政策裸跑文件任务。
+        guard !skillsBrief.isEmpty, Self.sharedArtifactPolicy != nil else {
+            throw APIError.server(status: 0, body: L(
+                "技能运行时损坏或缺失（无法加载「全局产物规则」），文件处理已停用。请重新安装应用或修复技能组件。",
+                "The skills runtime is missing or corrupted (global artifact policy unavailable), so file processing is disabled. Reinstall the app or repair the skills component."))
+        }
+        let briefInPrompt = (backend == .claudeCode || skillsBrief.isEmpty) ? "" : skillsBrief + "\n\n"
+        let prompt = briefInPrompt + Self.cliScopePolicy + "\n\n用户请求：\n" + Self.apiText(of: userMessage)
         let cwd = taskFolder ?? FileManager.default.homeDirectoryForCurrentUser
 
         let cliPath: String?
@@ -773,6 +815,9 @@ final class ChatViewModel: ObservableObject {
         let sessionKey = backend.rawValue
         if backend == .claudeCode {
             args = ["-p", prompt, "--output-format", "stream-json", "--verbose"]
+            if !skillsBrief.isEmpty {
+                args += ["--append-system-prompt", skillsBrief]
+            }
             if let sid = taskSessions[sessionKey] {
                 args += ["--resume", sid]
             }
@@ -818,6 +863,13 @@ final class ChatViewModel: ObservableObject {
         for key in env.keys where key.hasPrefix("ANTHROPIC_") || key.hasPrefix("CLAUDE")
             || key.hasPrefix("OPENAI_") || key == "CURSOR_API_KEY" {
             env.removeValue(forKey: key)
+        }
+        // 技能简报中承诺的专用工具目录（ffmpeg/pngquant 等）对 CLI 可见。
+        let skillsBin = Self.supportRoot.appendingPathComponent("bin").path
+        if FileManager.default.fileExists(atPath: skillsBin) {
+            var parts = (env["PATH"] ?? "").split(separator: ":", omittingEmptySubsequences: true).map(String.init)
+            if !parts.contains(skillsBin) { parts.append(skillsBin) }
+            env["PATH"] = parts.joined(separator: ":")
         }
         process.environment = env
 
@@ -1274,8 +1326,8 @@ final class ChatViewModel: ObservableObject {
         处理任务的方式：
         - 严格遵守用户指定的对象、页码、数量和输出格式，只做完成请求必需的操作；用户只问一页就只处理该页，绝不能擅自扩展为整个文件或所有页面。
         - 用户消息中列出的“选中/附上的文件”就是本次任务的全部输入范围：任务描述没有点名对象时，对象就是这些文件，而不是所在文件夹；绝不能因为文件夹里其他文件相似、或“批量处理更一致”而扩大到列表之外。
-        - 用户只要求查看、读取、分析或回答内容时，直接在聊天中返回结果，不创建文件。只有用户明确说保存、导出或生成文件时才创建对应的最终文件。
-        - 使用 run_skill 生成产物时，默认保留原文件和每一次历史产物，本次结果必须使用唯一的新文件名；相同任务重复执行要自动使用 _2、_3 等名称，即使用户指定 --output 也不代表允许覆盖。普通的“处理/优化/压缩/转换”不代表允许覆盖；只有用户明确要求“覆盖原文件/原地修改”时，才可传 --overwrite-original，涉及 --in-place 时必须同时传两者。禁止把 --output 指向输入文件。
+        - 用户只要求查看、读取、分析或回答内容时，直接在聊天中返回结果，不创建文件。转换、压缩、OCR、转写、总结为纪要、差异对比、二维码识别、重命名或去重等动作本身就要求生成可交付文件，聊天文字不能替代产物。
+        - 产物的保留、命名、目录去向、覆盖边界与删除/去重安全要求，一律以上方技能目录开头的「全局产物规则」为准；run_skill 传参同样受其约束（--overwrite-original/--in-place 只在用户明确要求覆盖时使用，禁止把 --output 指向输入文件）。
         - 不创建用户没要求的副本、拆分页、逐页图片、全量文本或其他衍生物。工具确需中间文件时只能放系统临时目录，并在结束前清理。
         - 如果目标范围不明确且不同理解会产生不同文件或批量操作，先问一个简短的澄清问题，不要自行选择最大范围。
         - 提取 PDF 文字必须用 pdf-ocr；传入用户指定的 --pages。未要求保存时不要传 --output，也不要先调用 PDF 拆分或转图片技能。
@@ -2240,11 +2292,54 @@ final class ChatViewModel: ObservableObject {
         return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
     }()
 
-    nonisolated private static func runSkill(skill: String, args: [String], cwd: URL) async -> String {
-        // 打包分发的独立 Python 优先；开发机的 venv 作为后备。
+    /// 共享产物政策的唯一来源：catalog.txt 中以「全局产物规则：」开头的整段。
+    /// 按稳定标记提取而非物理行号，catalog 未来加注释/版本头也不受影响。
+    nonisolated static let artifactPolicyMarker = "全局产物规则："
+
+    nonisolated static func extractArtifactPolicy(from catalog: String) -> String? {
+        guard let range = catalog.range(of: artifactPolicyMarker) else { return nil }
+        let segment = catalog[range.lowerBound...].prefix(while: { $0 != "\n" })
+        let policy = String(segment).trimmingCharacters(in: .whitespacesAndNewlines)
+        // 语义完整性下限：防止截断/损坏的 catalog 提供半句政策。
+        let required = ["原文件", "Output", "覆盖", "副本"]
+        guard policy.count > 80, required.allSatisfy(policy.contains) else { return nil }
+        return policy
+    }
+
+    /// nil 意味着技能运行时损坏——按约定拒绝文件处理任务而不是无政策裸跑。
+    nonisolated static let sharedArtifactPolicy: String? = extractArtifactPolicy(from: skillsCatalog)
+
+    /// 打包分发的独立 Python 优先；开发机的 venv 作为后备。
+    nonisolated static var skillsPython: URL {
         let bundled = supportRoot.appendingPathComponent("python/bin/python3")
         let venv = supportRoot.appendingPathComponent("venv/bin/python3")
-        let python = FileManager.default.fileExists(atPath: bundled.path) ? bundled : venv
+        return FileManager.default.fileExists(atPath: bundled.path) ? bundled : venv
+    }
+
+    /// CLI 后端的技能简报（ROADMAP P1：技能目录经 --append-system-prompt 注入）。
+    /// 外部代理没有内置工具循环，必须显式告知调用方式与组件安装的同意边界，
+    /// 否则会徒手重写技能甚至擅自 brew install 系统软件。
+    nonisolated static let cliSkillsBrief: String = {
+        guard !skillsCatalog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        let python = skillsPython.path
+        let toolbox = supportRoot.appendingPathComponent("skills/skills.py").path
+        guard FileManager.default.fileExists(atPath: python),
+              FileManager.default.fileExists(atPath: toolbox) else { return "" }
+        let bin = supportRoot.appendingPathComponent("bin").path
+        // PATH 承诺行与实际注入（runCLIBackendTurn）同一存在性条件，不做空头承诺。
+        let binLine = FileManager.default.fileExists(atPath: bin)
+            ? "专用工具目录（ffmpeg/ffprobe/pngquant/pdfrender）已加入 PATH：\(bin)\n"
+            : ""
+        return """
+        Folderis 内置技能工具箱：涉及下列技能覆盖的文件处理时必须优先调用，禁止另写脚本重复实现，也禁止未经用户明确同意安装任何系统软件（brew/pip/npm 等同样受限；可选组件一律先征求用户同意，经 install-component 安装）。
+        调用方式（Bash 中执行，cwd 即任务文件夹）：
+        "\(python)" "\(toolbox)" <技能名> <参数…>
+        \(binLine)\(skillsCatalog)
+        """
+    }()
+
+    nonisolated private static func runSkill(skill: String, args: [String], cwd: URL) async -> String {
+        let python = skillsPython
         let toolbox = supportRoot.appendingPathComponent("skills/skills.py")
         guard FileManager.default.fileExists(atPath: python.path),
               FileManager.default.fileExists(atPath: toolbox.path) else {
@@ -2477,12 +2572,22 @@ final class ChatViewModel: ObservableObject {
         """
     }
 
-    private func registerTask(_ taskID: String, text: String) {
+    nonisolated static func taskWorkingDirectory(boundFolder: URL?, attachments: [URL]) -> URL? {
+        let parents = Set(attachments.map {
+            $0.standardizedFileURL.deletingLastPathComponent().path
+        })
+        if parents.count == 1, let parent = parents.first {
+            return URL(fileURLWithPath: parent, isDirectory: true).standardizedFileURL
+        }
+        return boundFolder?.standardizedFileURL
+    }
+
+    private func registerTask(_ taskID: String, text: String, folder: URL?, selection: [URL]) {
         let task = PersistedTask(
             id: taskID,
             text: text,
-            folder: boundFolder?.path,
-            selection: boundSelection.isEmpty ? nil : boundSelection.map(\.path),
+            folder: folder?.path,
+            selection: selection.isEmpty ? nil : selection.map(\.path),
             conversationID: conversationID.uuidString,
             createdAt: Date()
         )

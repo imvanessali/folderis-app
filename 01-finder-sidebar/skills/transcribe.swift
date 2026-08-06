@@ -13,6 +13,7 @@ guard args.count >= 2 else {
 }
 let url = URL(fileURLWithPath: args[1])
 let localeID = args.count >= 3 ? args[2] : "zh-CN"
+let timeoutSeconds = args.count >= 4 ? max(30, Double(args[3]) ?? 120) : 120
 
 func finish(_ code: Int32, _ message: String? = nil) -> Never {
     if let message {
@@ -39,30 +40,41 @@ guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeID)),
 }
 
 let request = SFSpeechURLRecognitionRequest(url: url)
-request.shouldReportPartialResults = false
+request.shouldReportPartialResults = true
 if recognizer.supportsOnDeviceRecognition {
     request.requiresOnDeviceRecognition = true
 }
 
 var finalText = ""
+var lastBest = ""
 var failed: String?
 
 recognizer.recognitionTask(with: request) { result, error in
     if let error {
-        failed = error.localizedDescription
+        if finalText.isEmpty && !lastBest.isEmpty {
+            finalText = lastBest
+        } else if finalText.isEmpty {
+            failed = error.localizedDescription
+        }
         CFRunLoopStop(CFRunLoopGetMain())
         return
     }
     guard let result else { return }
+    lastBest = result.bestTranscription.formattedString
     if result.isFinal {
-        finalText = result.bestTranscription.formattedString
+        finalText = lastBest
         CFRunLoopStop(CFRunLoopGetMain())
     }
 }
 
-// Watchdog: cap a single chunk at 10 minutes.
-DispatchQueue.main.asyncAfter(deadline: .now() + 600) {
-    failed = "转写超时"
+// Each input is already a short speech segment. Preserve the latest partial
+// result if Speech does not deliver a final callback before the watchdog.
+DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSeconds) {
+    if finalText.isEmpty && !lastBest.isEmpty {
+        finalText = lastBest
+    } else if finalText.isEmpty {
+        failed = "转写超时"
+    }
     CFRunLoopStop(CFRunLoopGetMain())
 }
 

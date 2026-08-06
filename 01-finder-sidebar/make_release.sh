@@ -18,7 +18,7 @@ echo "签名身份：$IDENTITY"
 RUNTIME_SRC="${RUNTIME_SRC:?需要 RUNTIME_SRC=<含 pyrt/ helpers/ ffmpeg 的目录>}"
 ARCH="${ARCH:-arm64}"   # arm64 | x86_64
 APP_VERSION="1.1.0"
-BUILD_VERSION="20260803.2"
+BUILD_VERSION="20260805.3"
 NOTARY_SCRATCH=""
 HELPER_BUILD=""
 BG_BUILD=""
@@ -136,13 +136,13 @@ cp -R "$RUNTIME_SRC/$PY_DIR" "$RT/python"
 # 签名和公证只能证明文件未被篡改，不能证明 Python 标准库完整。
 # 必须实际启动嵌入式运行时，阻止缺失 encodings 等源文件的坏包进入签名流程。
 "$RT/python/bin/python3" -c \
-  'import encodings, openpyxl, xlrd, PIL; print("Folderis Python runtime OK")' || {
+  'import encodings, openpyxl, pyzipper, xlrd, PIL; print("Folderis Python runtime OK")' || {
   echo "错误：发布运行时无法启动或 Excel/图片依赖不完整"
   exit 1
 }
 
-# pdfrender 的页码选择属于技能协议的一部分。发布时从当前源码重建，
-# 避免 scratch 目录里的旧二进制静默忽略新增参数。
+# 原生 helper 属于技能协议的一部分。发布时从当前源码重建，避免
+# scratch 目录里的旧二进制静默忽略新增参数，也避免客户机依赖 Xcode。
 HELPER_BUILD=$(mktemp -d)
 xcrun swiftc -O -target arm64-apple-macosx13.0 skills/pdfrender.swift \
   -o "$HELPER_BUILD/pdfrender-arm64"
@@ -150,6 +150,16 @@ xcrun swiftc -O -target x86_64-apple-macosx13.0 skills/pdfrender.swift \
   -o "$HELPER_BUILD/pdfrender-x86_64"
 lipo -create "$HELPER_BUILD/pdfrender-arm64" "$HELPER_BUILD/pdfrender-x86_64" \
   -output "$RUNTIME_SRC/helpers-universal/pdfrender"
+xcrun swiftc -O -target arm64-apple-macosx13.0 skills/transcribe.swift \
+  -o "$HELPER_BUILD/transcribe-arm64" \
+  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+  -Xlinker skills/transcribe-Info.plist
+xcrun swiftc -O -target x86_64-apple-macosx13.0 skills/transcribe.swift \
+  -o "$HELPER_BUILD/transcribe-x86_64" \
+  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+  -Xlinker skills/transcribe-Info.plist
+lipo -create "$HELPER_BUILD/transcribe-arm64" "$HELPER_BUILD/transcribe-x86_64" \
+  -output "$RUNTIME_SRC/helpers-universal/transcribe"
 rm -rf "$HELPER_BUILD"
 HELPER_BUILD=""
 

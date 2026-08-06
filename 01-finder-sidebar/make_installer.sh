@@ -27,7 +27,7 @@ cp -R .xcbuild/Build/Products/Release/Folderis.app "$DIST/Folderis.app"
 echo "== 2/4 运行时 =="
 cp -R "$RUNTIME_SRC/pyrt/python" "$DIST/runtime/python"
 "$DIST/runtime/python/bin/python3" -c \
-  'import encodings, openpyxl, xlrd, PIL; print("Folderis Python runtime OK")' || {
+  'import encodings, openpyxl, pyzipper, xlrd, PIL; print("Folderis Python runtime OK")' || {
   echo "错误：安装包运行时无法启动或 Excel/图片依赖不完整"
   exit 1
 }

@@ -25,7 +25,7 @@ targets:
         PRODUCT_NAME: Folderis
         CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: "1.1.0"
-        CURRENT_PROJECT_VERSION: "20260803.2"
+        CURRENT_PROJECT_VERSION: "20260805.3"
     dependencies:
       - target: FinderSidebarExt
         embed: true

@@ -6,7 +6,9 @@
       "label": "本地裁剪",
       "cwd": "Test Image",
       "request": "从（100，50）开始裁剪成800×600px",
-      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "files": [
+        "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
+      ],
       "expect_matched": true,
       "expect_skill": "img-resize"
     },
@@ -15,7 +17,9 @@
       "label": "本地转webp",
       "cwd": "Test Image",
       "request": "把这张图转成 webp",
-      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "files": [
+        "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
+      ],
       "expect_matched": true,
       "expect_skill": "img-convert"
     },
@@ -24,7 +28,9 @@
       "label": "本地xlsx转csv",
       "cwd": "Test Excel",
       "request": "转换为 csv 格式",
-      "files": ["样例数据.xlsx"],
+      "files": [
+        "样例数据.xlsx"
+      ],
       "expect_matched": true,
       "expect_skill": "table-convert"
     },
@@ -33,7 +39,9 @@
       "label": "本地PDF抽页",
       "cwd": "Test PDF",
       "request": "抽取第2-5页另存",
-      "files": ["ai_agents_handbook.pdf"],
+      "files": [
+        "ai_agents_handbook.pdf"
+      ],
       "expect_matched": true,
       "expect_skill": "pdf-split"
     },
@@ -42,7 +50,9 @@
       "label": "本地转gif",
       "cwd": "Test Video",
       "request": "把前5秒做成 gif，宽480",
-      "files": ["file_example_MP4_1280_10MG.mp4"],
+      "files": [
+        "file_example_MP4_1280_10MG.mp4"
+      ],
       "expect_matched": true,
       "expect_skill": "av-gif"
     },
@@ -51,7 +61,9 @@
       "label": "模糊拒接",
       "cwd": "Test Image",
       "request": "处理一下这张图",
-      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "files": [
+        "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
+      ],
       "expect_matched": false
     },
     {
@@ -59,7 +71,9 @@
       "label": "水印拒接",
       "cwd": "Test Image",
       "request": "加个水印再裁剪成800×600",
-      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "files": [
+        "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
+      ],
       "expect_matched": false
     },
     {
@@ -67,7 +81,9 @@
       "label": "缺参拒接",
       "cwd": "Test Image",
       "request": "帮我裁剪一下",
-      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "files": [
+        "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
+      ],
       "expect_matched": false
     },
     {
@@ -75,7 +91,9 @@
       "label": "覆盖拒接",
       "cwd": "Test Image",
       "request": "转成webp并覆盖原文件",
-      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "files": [
+        "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
+      ],
       "expect_matched": false
     },
     {
@@ -83,7 +101,9 @@
       "label": "混合拒接",
       "cwd": "Test Image",
       "request": "转成webp顺便压缩一下",
-      "files": ["michail-sapiton-alCEnNmzhPE-unsplash.jpg"],
+      "files": [
+        "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
+      ],
       "expect_matched": false
     },
     {
@@ -91,7 +111,9 @@
       "label": "本地视频压缩",
       "cwd": "Test Video",
       "request": "压缩这个视频",
-      "files": ["file_example_MP4_1280_10MG.mp4"],
+      "files": [
+        "file_example_MP4_1280_10MG.mp4"
+      ],
       "expect_matched": true,
       "expect_skill": "av-compress"
     },
@@ -100,7 +122,98 @@
       "label": "视频打包拒接",
       "cwd": "Test Video",
       "request": "把这个视频打包压缩",
-      "files": ["file_example_MP4_1280_10MG.mp4"],
+      "files": [
+        "file_example_MP4_1280_10MG.mp4"
+      ],
+      "expect_matched": false
+    },
+    {
+      "id": "LD-13",
+      "label": "本地旋转",
+      "cwd": "Test Image",
+      "request": "全部顺时针旋转90度",
+      "files": [
+        "marko-brecic-Z9P2g8TuTdA-unsplash.jpg",
+        "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
+      ],
+      "expect_matched": true,
+      "expect_skill": "img-rotate"
+    },
+    {
+      "id": "LD-14",
+      "label": "复合操作拒接",
+      "cwd": "Test Image",
+      "request": "顺时针旋转 90 度并压缩",
+      "files": [
+        "marko-brecic-Z9P2g8TuTdA-unsplash.png"
+      ],
+      "expect_matched": false
+    },
+    {
+      "id": "LD-15",
+      "label": "本地PNG压缩",
+      "cwd": "Test Image",
+      "request": "视觉无损地压缩这些PNG",
+      "files": [
+        "marko-brecic-Z9P2g8TuTdA-unsplash.png"
+      ],
+      "expect_matched": true,
+      "expect_skill": "png-compress"
+    },
+    {
+      "id": "LD-16",
+      "label": "本地文字水印",
+      "cwd": "Test Image",
+      "request": "在每张图片右下角加半透明水印:© 2026 Vanessa",
+      "files": [
+        "michail-sapiton-alCEnNmzhPE-unsplash.jpg"
+      ],
+      "expect_matched": true,
+      "expect_skill": "img-watermark"
+    },
+    {
+      "id": "LD-17",
+      "label": "本地视频截段",
+      "cwd": "Test Video",
+      "request": "把每个视频裁剪到第3-8秒",
+      "files": [
+        "file_example_MP4_1280_10MG.mp4"
+      ],
+      "expect_matched": true,
+      "expect_skill": "av-trim"
+    },
+    {
+      "id": "LD-18",
+      "label": "本地音频拼接",
+      "cwd": "Test Audio",
+      "request": "按文件名顺序把这几段录音拼接在一起",
+      "files": [
+        "clip_a.wav",
+        "clip_b.wav"
+      ],
+      "expect_matched": true,
+      "expect_skill": "audio-concat"
+    },
+    {
+      "id": "LD-19",
+      "label": "本地GBK转码",
+      "cwd": "Test Docs",
+      "request": "这些文件是GBK编码的——把它们全部转成UTF-8",
+      "files": [
+        "销售说明_gbk.txt"
+      ],
+      "expect_matched": true,
+      "expect_skill": "encoding-convert"
+    },
+    {
+      "id": "LD-20",
+      "label": "合并加水印拒接",
+      "cwd": "Test PDF",
+      "request": "合并这些PDF再加个水印",
+      "files": [
+        "ai_agents_handbook_pages_2-5.pdf",
+        "ai_agents_handbook_pages_2-5-v1.1.pdf"
+      ],
       "expect_matched": false
     }
   ]

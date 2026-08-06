@@ -1,14 +1,14 @@
 {
   "mac": {
-    "version": "20260803.2",
+    "version": "20260805.3",
     "url": "https://folderis.app/"
   },
   "win": {
-    "version": "20260803.2",
+    "version": "20260805.3",
     "url": "https://folderis.app/"
   },
   "message": {
-    "zh": "",
-    "en": ""
+    "zh": "1.1.0：常见文件操作本地秒回（不耗 AI 额度）、产物管理更安全",
+    "en": "1.1.0: instant local skills for common file tasks (no AI quota), safer output handling"
   }
 }

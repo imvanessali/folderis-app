@@ -70,7 +70,7 @@ def coverage_snapshot(approved, *, occluder_position=None):
 class SharedDispatchCaseTests(unittest.TestCase):
     def test_cases_are_shared_and_cover_positive_and_negative_routes(self):
         cases = load_dispatch_cases()
-        self.assertEqual([case["id"] for case in cases], [f"LD-{index:02d}" for index in range(1, 13)])
+        self.assertEqual([case["id"] for case in cases], [f"LD-{index:02d}" for index in range(1, 21)])
         self.assertTrue(any(case["expect_matched"] for case in cases))
         self.assertTrue(any(not case["expect_matched"] for case in cases))
         windows_runner = (FIXTURES / "windows-qa-kit" / "run_qa_windows.py").read_text(encoding="utf-8")
@@ -82,6 +82,18 @@ class SharedDispatchCaseTests(unittest.TestCase):
     def test_mac_report_includes_hash_digest_evidence(self):
         mac_runner = (FIXTURES / "run_qa_macos.py").read_text(encoding="utf-8")
         self.assertIn('"digests": digests', mac_runner)
+
+    def test_mac_qa_never_falls_back_to_signed_app_runtime(self):
+        mac_runner = (FIXTURES / "run_qa_macos.py").read_text(encoding="utf-8")
+        self.assertNotIn("/Applications/Folderis.app/Contents/Resources/runtime/python",
+                         mac_runner)
+
+    def test_mac_qa_disables_bytecode_writes_for_every_skill_process(self):
+        runner = load_module("folderis_macos_qa_environment_tests",
+                             FIXTURES / "run_qa_macos.py")
+        with mock.patch.object(runner.subprocess, "run") as run:
+            runner.run_command(Path("python"), Path("skills.py"), Path("."), [], {})
+        self.assertEqual(run.call_args.kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
 
 
 class RecorderTests(unittest.TestCase):
@@ -161,7 +173,7 @@ class RecorderTests(unittest.TestCase):
         tasks = self.runner.recording_tasks(
             load_dispatch_cases(), structural_cases(), True
         )
-        self.assertEqual(len(tasks), 61)
+        self.assertEqual(len(tasks), 69)  # 20 dispatch + 47 structural + collision + cancel
         self.assertEqual(tasks[0][0], "LD-01")
         self.assertIn(("ART-COLLISION", "重复转换碰撞"), tasks)
         self.assertIn(("CANCEL-01", "视频压缩取消"), tasks)

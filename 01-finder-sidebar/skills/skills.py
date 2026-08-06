@@ -280,8 +280,25 @@ def run(cmd, **kw):
 
 def cmd_rename_batch(a):
     files = expand(a.files)
+    if a.sort == "capture-time":
+        def capture_key(path):
+            captured = None
+            try:
+                from PIL import Image
+                with Image.open(path) as image:
+                    exif = image.getexif()
+                    raw = exif.get(36867) or exif.get(36868) or exif.get(306)
+                    if raw:
+                        captured = datetime.strptime(str(raw), "%Y:%m:%d %H:%M:%S").timestamp()
+            except Exception:
+                pass
+            return (captured if captured is not None else path.stat().st_mtime,
+                    unicodedata.normalize("NFC", path.name).casefold())
+        files = sorted(files, key=capture_key)
+    else:
+        files = sorted(files, key=lambda path: unicodedata.normalize("NFC", path.name).casefold())
     plan = []
-    for i, f in enumerate(sorted(files), start=a.start):
+    for i, f in enumerate(files, start=a.start):
         name = f.stem
         if a.regex and a.replace is not None:
             name = re.sub(a.regex, a.replace, name)
@@ -297,11 +314,22 @@ def cmd_rename_batch(a):
             print(f"{src.name} -> {dst.name}")
         ok(f"（预览，共 {len(plan)} 项，未执行）")
         return
-    for src, dst in plan:
-        if dst.exists():
-            die(f"目标已存在：{dst.name}")
-        src.rename(dst)
-    ok(f"已重命名 {len(plan)} 个文件")
+    if a.overwrite_original:
+        for src, dst in plan:
+            if dst.exists():
+                die(f"目标已存在：{dst.name}")
+            src.rename(dst)
+        ok(f"已按用户明确要求重命名 {len(plan)} 个原文件")
+        return
+
+    output_dir = batch_output_directory([src for src, _ in plan], len(plan))
+    outputs = []
+    for src, desired in plan:
+        target = (output_dir / desired.name) if output_dir else available_output(desired)
+        shutil.copy2(src, target)
+        outputs.append(target)
+        print(f"{src.name} → {target}")
+    ok(f"已生成 {len(outputs)} 个重命名副本，原文件未改动；结果：{output_dir or outputs[0]}")
 
 
 def _reader(path, password=None):
@@ -318,6 +346,7 @@ def cmd_pdf_split(a):
     src = Path(a.file)
     if a.ranges:
         ranges = a.ranges.split(",")
+        output_dir = batch_output_directory([src], len(ranges)) if not a.output else None
         if a.output and len(ranges) != 1:
             die("多个页码范围不能共用一个 --output；请分别处理")
         for idx, rng in enumerate(ranges, 1):
@@ -329,16 +358,20 @@ def cmd_pdf_split(a):
             for p in range(lo - 1, hi):
                 w.add_page(r.pages[p])
             label = re.sub(r"[^0-9-]", "", rng) or str(idx)
-            out = Path(a.output) if a.output else src.with_name(f"{src.stem}_pages_{label}.pdf")
-            out = available_output(out, explicit=bool(a.output))
+            desired = src.with_name(f"{src.stem}_pages_{label}.pdf")
+            out = Path(a.output) if a.output else ((output_dir / desired.name) if output_dir else desired)
+            out = available_output(out, explicit=bool(a.output)) if not output_dir else out
             with open(out, "wb") as fh:
                 w.write(fh)
         ok(f"已按范围拆分为 {len(ranges)} 个文件")
     else:
+        output_dir = batch_output_directory([src], len(r.pages))
         for i, page in enumerate(r.pages, 1):
             w = PdfWriter()
             w.add_page(page)
-            with open(available_output(src.with_name(f"{src.stem}_p{i:03d}.pdf")), "wb") as fh:
+            desired = src.with_name(f"{src.stem}_p{i:03d}.pdf")
+            out = (output_dir / desired.name) if output_dir else available_output(desired)
+            with open(out, "wb") as fh:
                 w.write(fh)
         ok(f"已拆分为 {len(r.pages)} 个单页 PDF")
 
@@ -395,25 +428,52 @@ def cmd_pdf_compress(a):
     from pypdf import PdfWriter
     files = expand(a.files)
     total_before = total_after = 0
+    output_dir = None if a.in_place else batch_output_directory(files, len(files))
     for f in files:
         before = f.stat().st_size
-        writer = PdfWriter(clone_from=str(f))
-        for page in writer.pages:
-            page.compress_content_streams()
-        try:
-            writer.compress_identical_objects(remove_duplicates=True, remove_unreferenced=True)
-        except TypeError:
-            writer.compress_identical_objects(remove_identicals=True, remove_orphans=True)
-        except Exception:
-            pass
-        out = f if a.in_place else available_output(f.with_name(f.stem + "_compressed.pdf"))
-        with open(out, "wb") as fh:
-            writer.write(fh)
+        desired = f.with_name(f.stem + "_compressed.pdf")
+        out = f if a.in_place else ((output_dir / desired.name) if output_dir else available_output(desired))
+        with tempfile.TemporaryDirectory(prefix="folderis-pdf-compress-") as td:
+            candidates = []
+            pypdf_candidate = Path(td) / "pypdf.pdf"
+            writer = PdfWriter(clone_from=str(f))
+            for page in writer.pages:
+                page.compress_content_streams()
+            try:
+                writer.compress_identical_objects(remove_duplicates=True, remove_unreferenced=True)
+            except TypeError:
+                writer.compress_identical_objects(remove_identicals=True, remove_orphans=True)
+            except Exception:
+                pass
+            with pypdf_candidate.open("wb") as fh:
+                writer.write(fh)
+            candidates.append(pypdf_candidate)
+
+            qpdf = shutil.which("qpdf")
+            if qpdf:
+                qpdf_candidate = Path(td) / "qpdf.pdf"
+                result = subprocess.run([
+                    qpdf, "--object-streams=generate", "--recompress-flate",
+                    "--compression-level=9", str(f), str(qpdf_candidate)
+                ], capture_output=True, text=True)
+                if result.returncode == 0 and qpdf_candidate.exists():
+                    candidates.append(qpdf_candidate)
+
+            valid = []
+            expected_pages = len(_reader(f).pages)
+            for candidate in candidates:
+                try:
+                    if len(_reader(candidate).pages) == expected_pages:
+                        valid.append(candidate)
+                except Exception:
+                    pass
+            best = min(valid, key=lambda path: path.stat().st_size) if valid else f
+            if best.stat().st_size >= before:
+                best = f
+            shutil.copyfile(best, out)
         after = out.stat().st_size
-        if after >= before and not a.in_place:
-            shutil.copyfile(f, out)
-            after = before
-            print(f"{f.name}: 已是最优结构，无可压缩空间")
+        if after >= before:
+            print(f"{f.name}: 已是最优无损结构，无可压缩空间")
         else:
             print(f"{f.name}: {before//1024}KB → {after//1024}KB（-{100 - after*100//max(before,1)}%）")
         total_before += before
@@ -428,7 +488,17 @@ def cmd_pdf_convert(a):
             die("PDF 转图片必须明确指定 --pages（如 --pages 1 或 --pages all），不能默认处理全部页面")
 
         requested = a.pages.strip()
-        out_dir = available_output(Path(a.output or f"{src.stem}_pages"), explicit=bool(a.output))
+        page_count = len(_reader(src, a.password).pages)
+        selected_pages = _page_numbers(requested, page_count)
+        if a.output:
+            out_dir = available_output(Path(a.output), explicit=True)
+            single_output = None
+        elif len(selected_pages) > 1:
+            out_dir = batch_output_directory([src], len(selected_pages))
+            single_output = None
+        else:
+            out_dir = src.parent
+            single_output = available_output(src.with_name(f"{src.stem}_page_{selected_pages[0]:03d}.{a.to}"))
 
         out_dir.parent.mkdir(parents=True, exist_ok=True)
         temp_dir = Path(tempfile.mkdtemp(prefix=".folderis-pdf-pages-", dir=out_dir.parent))
@@ -444,11 +514,23 @@ def cmd_pdf_convert(a):
             n = len(list(temp_dir.glob(f"*.{a.to}")))
             if n == 0:
                 die("没有生成任何页面图片")
-            temp_dir.replace(out_dir)
+            if single_output:
+                generated = next(temp_dir.glob(f"*.{a.to}"))
+                shutil.move(str(generated), str(single_output))
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                result_path = single_output
+            else:
+                if a.output:
+                    temp_dir.replace(out_dir)
+                else:
+                    for generated in temp_dir.glob(f"*.{a.to}"):
+                        shutil.move(str(generated), str(out_dir / generated.name))
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                result_path = out_dir
         except BaseException:
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
-        ok(f"已按 --pages {requested} 渲染 {n} 页 → {out_dir}/")
+        ok(f"已按 --pages {requested} 渲染 {n} 页 → {result_path}")
     elif a.to == "txt":
         text = _pdf_ocr_text(src, max(a.dpi, 220), a.password, a.pages)
         out = available_output(Path(a.output or src.with_suffix(".txt")), explicit=bool(a.output))
@@ -516,7 +598,46 @@ def cmd_merge_docs(a):
                 fh.write("\n\n")
         ok(f"已合并 {len(files)} 个文本 → {out.name}")
     elif exts <= {".docx", ".doc", ".rtf", ".txt"}:
-        run(["textutil", "-cat", "docx", *map(str, files), "-output", str(out)])
+        if IS_WIN:
+            try:
+                import pythoncom
+                import win32com.client
+            except ImportError:
+                die("缺少 Windows Office 自动化组件（重装技能运行时即可）")
+            pythoncom.CoInitialize()
+            app = None
+            merged = None
+            try:
+                app = win32com.client.DispatchEx("Word.Application")
+                app.Visible = False
+                merged = app.Documents.Add()
+                for index, source in enumerate(files):
+                    target = merged.Range(merged.Content.End - 1, merged.Content.End - 1)
+                    if index:
+                        target.InsertBreak(7)  # wdPageBreak
+                        target = merged.Range(merged.Content.End - 1, merged.Content.End - 1)
+                    if source.suffix.lower() == ".txt":
+                        target.InsertAfter(source.read_text(encoding="utf-8", errors="replace"))
+                    else:
+                        document = app.Documents.Open(str(source.resolve()), ReadOnly=True)
+                        try:
+                            document.Content.Copy()
+                            target.PasteAndFormat(16)  # wdFormatOriginalFormatting
+                        finally:
+                            document.Close(False)
+                merged.SaveAs2(str(out.resolve()), FileFormat=16)  # wdFormatDocumentDefault
+            except Exception as error:
+                die(f"Word 合并失败：{error}")
+            finally:
+                if merged is not None:
+                    try: merged.Close(False)
+                    except Exception: pass
+                if app is not None:
+                    try: app.Quit()
+                    except Exception: pass
+                pythoncom.CoUninitialize()
+        else:
+            run(["textutil", "-cat", "docx", *map(str, files), "-output", str(out)])
         ok(f"已合并 {len(files)} 个文档 → {out.name}")
     else:
         die(f"不支持混合类型合并：{exts}")
@@ -524,18 +645,37 @@ def cmd_merge_docs(a):
 
 def cmd_txt_clean(a):
     files = expand(a.files)
+    output_dir = None if a.in_place else batch_output_directory(files, len(files))
     for f in files:
-        text = f.read_text(encoding="utf-8", errors="replace")
+        raw = f.read_bytes()
+        had_bom = raw.startswith(b"\xef\xbb\xbf")
+        text = raw.decode("utf-8-sig", errors="replace")
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         if a.trim:
             text = "\n".join(line.rstrip() for line in text.split("\n"))
         if a.collapse_blank:
-            text = re.sub(r"\n{3,}", "\n\n", text)
+            lines = text.split("\n")
+            while lines and not lines[0].strip():
+                lines.pop(0)
+            while lines and not lines[-1].strip():
+                lines.pop()
+            collapsed = []
+            for line in lines:
+                if not line.strip():
+                    if collapsed and collapsed[-1] != "":
+                        collapsed.append("")
+                else:
+                    collapsed.append(line)
+            text = "\n".join(collapsed)
+            if text:
+                text += "\n"
         if a.strip_all_blank:
             text = "\n".join(l for l in text.split("\n") if l.strip())
-        target = f if a.in_place else available_output(f.with_name(f.stem + "_clean" + f.suffix))
-        target.write_text(text, encoding="utf-8")
-    ok(f"已清理 {len(files)} 个文本文件")
+        desired = f.with_name(f.stem + "_cleaned" + f.suffix)
+        target = f if a.in_place else ((output_dir / desired.name) if output_dir else available_output(desired))
+        target.write_text(text, encoding="utf-8-sig" if had_bom else "utf-8")
+        print(f"{f.name} → {target}")
+    ok(f"已清理 {len(files)} 个文本文件；原文件未改动")
 
 
 def cmd_txt_split(a):
@@ -551,8 +691,11 @@ def cmd_txt_split(a):
         parts = text.split(a.delimiter)
     else:
         die("需要 --lines / --chars / --delimiter 之一")
+    output_dir = batch_output_directory([f], len(parts))
     for i, part in enumerate(parts, 1):
-        available_output(f.with_name(f"{f.stem}_part{i:03d}{f.suffix}")).write_text(part, encoding="utf-8")
+        desired = f.with_name(f"{f.stem}_part{i:03d}{f.suffix}")
+        out = (output_dir / desired.name) if output_dir else available_output(desired)
+        out.write_text(part, encoding="utf-8")
     ok(f"已分割为 {len(parts)} 个文件")
 
 
@@ -560,6 +703,7 @@ def cmd_excel_split(a):
     import openpyxl
     src = Path(a.file)
     wb = openpyxl.load_workbook(str(src))
+    output_dir = batch_output_directory([src], len(wb.sheetnames))
     for name in wb.sheetnames:
         single = openpyxl.Workbook()
         single.remove(single.active)
@@ -568,7 +712,9 @@ def cmd_excel_split(a):
         for row in ws_src.iter_rows(values_only=True):
             ws_new.append(row)
         safe = re.sub(r'[/\\:*?"<>|]', "_", name)
-        single.save(available_output(src.with_name(f"{src.stem}_{safe}.xlsx")))
+        desired = src.with_name(f"{src.stem}_{safe}.xlsx")
+        out = (output_dir / desired.name) if output_dir else available_output(desired)
+        single.save(out)
     ok(f"已把 {len(wb.sheetnames)} 个工作表拆分为独立文件")
 
 
@@ -637,13 +783,59 @@ def cmd_excel_diff(a):
         wb = openpyxl.load_workbook(str(path), read_only=True)
         return list(wb.active.iter_rows(values_only=True))
     ra, rb = load(a.file_a), load(a.file_b)
+    if not ra or not rb:
+        die("参与对比的表格不能为空")
     keys = [int(k) - 1 for k in a.columns.split(",")] if a.columns else [0]
-    def index(rows):
-        return {tuple(r[k] for k in keys): r for r in rows[1:]}
-    ia, ib = index(ra), index(rb)
-    only_a = [k for k in ia if k not in ib]
-    only_b = [k for k in ib if k not in ia]
-    changed = [k for k in ia if k in ib and ia[k] != ib[k]]
+    if any(k < 0 or k >= len(ra[0]) or k >= len(rb[0]) for k in keys):
+        die("键列超出表格范围")
+    def index(rows, label):
+        result = {}
+        for row in rows[1:]:
+            key = tuple(row[k] for k in keys)
+            if key in result:
+                die(f"{label} 的键列存在重复值：{key}")
+            result[key] = row
+        return result
+    ia, ib = index(ra, Path(a.file_a).name), index(rb, Path(a.file_b).name)
+    only_a = sorted((k for k in ia if k not in ib), key=lambda item: tuple(map(str, item)))
+    only_b = sorted((k for k in ib if k not in ia), key=lambda item: tuple(map(str, item)))
+    changed = sorted((k for k in ia if k in ib and ia[k] != ib[k]), key=lambda item: tuple(map(str, item)))
+
+    headers = list(ra[0])
+    workbook = openpyxl.Workbook()
+    summary = workbook.active
+    summary.title = "汇总"
+    summary.append(["项目", "数量"])
+    summary.append([f"仅在 {Path(a.file_a).name}", len(only_a)])
+    summary.append([f"仅在 {Path(a.file_b).name}", len(only_b)])
+    summary.append(["键相同但内容不同", len(changed)])
+    summary.append(["键列", ", ".join(str(headers[k]) for k in keys)])
+
+    sheet_a = workbook.create_sheet("仅旧表")
+    sheet_a.append(headers)
+    for key in only_a:
+        sheet_a.append(list(ia[key]))
+    sheet_b = workbook.create_sheet("仅新表")
+    sheet_b.append(list(rb[0]))
+    for key in only_b:
+        sheet_b.append(list(ib[key]))
+    changes = workbook.create_sheet("内容变化")
+    changes.append(["键", "字段", "旧值", "新值"])
+    for key in changed:
+        old, new = ia[key], ib[key]
+        width = max(len(headers), len(rb[0]), len(old), len(new))
+        for column in range(width):
+            old_value = old[column] if column < len(old) else None
+            new_value = new[column] if column < len(new) else None
+            if old_value != new_value:
+                field = headers[column] if column < len(headers) else f"列{column + 1}"
+                changes.append([" | ".join(map(str, key)), field, old_value, new_value])
+
+    source_a = Path(a.file_a)
+    source_b = Path(a.file_b)
+    desired = source_a.with_name(f"{source_a.stem}_vs_{source_b.stem}_diff.xlsx")
+    output = available_output(Path(a.output) if a.output else desired, explicit=True)
+    workbook.save(output)
     print(f"仅在 {a.file_a}：{len(only_a)} 行")
     for k in only_a[:20]:
         print("  A:", k)
@@ -653,13 +845,78 @@ def cmd_excel_diff(a):
     print(f"键相同但内容不同：{len(changed)} 行")
     for k in changed[:20]:
         print("  Δ:", k)
+    ok(f"差异报告已生成：{output}")
 
 
 def cmd_excel_transform(a):
     """列级变换：按分隔符/正则把一列拆成多列，或多列合并成一列。
-    新列插入在源列右侧，不覆盖已有数据。"""
-    import openpyxl
+    拆分默认以新列替换源列；--keep-source 可保留源列。"""
     src = Path(a.file)
+    keep_source = getattr(a, "keep_source", False)
+    new_names = [name.strip() for name in (getattr(a, "new_names", None) or "").split(",")
+                 if name.strip()]
+    if src.suffix.lower() == ".csv":
+        with src.open(newline="", encoding="utf-8-sig") as stream:
+            rows = list(csv.reader(stream))
+        if not rows:
+            die("空表")
+        first_data_row = 0 if a.no_header else 1
+
+        if a.split_column:
+            col = a.split_column - 1
+
+            def parts_of(value):
+                if a.regex:
+                    match = re.search(a.regex, value or "")
+                    return [part or "" for part in match.groups()] if match else []
+                if a.delimiter:
+                    return (value or "").split(a.delimiter)
+                die("拆分需要 --delimiter 或 --regex（正则用捕获组定义各列）")
+
+            if col < 0 or any(col >= len(row) for row in rows):
+                die(f"第 {a.split_column} 列超出 CSV 范围")
+            width = max((len(parts_of(row[col])) for row in rows[first_data_row:]), default=0)
+            if width < 2:
+                die("没有可拆分的内容（检查分隔符/正则是否匹配）")
+            if new_names and len(new_names) != width:
+                die(f"--new-names 需要恰好 {width} 个列名（当前 {len(new_names)} 个）")
+            if not a.no_header:
+                base = rows[0][col] or f"列{a.split_column}"
+                names = new_names or [f"{base}_{index + 1}" for index in range(width)]
+                insert_at = col + 1 if keep_source else col
+                rows[0][insert_at:insert_at + (1 if not keep_source else 0)] = names
+            filled = 0
+            for row in rows[first_data_row:]:
+                parts = [part.strip() for part in parts_of(row[col])]
+                if parts:
+                    filled += 1
+                values = parts[:width] + [""] * max(0, width - len(parts))
+                if keep_source:
+                    row[col + 1:col + 1] = values
+                else:
+                    row[col:col + 1] = values
+            summary = f"已把第 {a.split_column} 列拆成 {width} 列（{filled} 行有内容）"
+        elif a.merge_columns:
+            cols = [int(value) - 1 for value in a.merge_columns.split(",")]
+            if any(col < 0 or any(col >= len(row) for row in rows) for col in cols):
+                die(f"列 {a.merge_columns} 超出 CSV 范围")
+            separator = a.delimiter if a.delimiter is not None else ""
+            target = max(cols) + 1
+            if not a.no_header:
+                rows[0].insert(target, "+".join(rows[0][col] or str(col + 1) for col in cols))
+            for row in rows[first_data_row:]:
+                row.insert(target, separator.join(row[col] for col in cols))
+            summary = f"已把列 {a.merge_columns} 合并到第 {target + 1} 列"
+        else:
+            die("需要 --split-column 或 --merge-columns")
+
+        out = available_output(src.with_name(src.stem + "_transformed.csv"))
+        with out.open("w", newline="", encoding="utf-8-sig") as stream:
+            csv.writer(stream).writerows(rows)
+        ok(f"{summary} → {out.name}")
+        return
+
+    import openpyxl
     wb = openpyxl.load_workbook(str(src))
     ws = wb[a.sheet] if a.sheet else wb.active
     first_data_row = 1 if a.no_header else 2
@@ -681,22 +938,28 @@ def cmd_excel_transform(a):
             n = max(n, len(parts_of(row[col - 1].value)))
         if n < 2:
             die("没有可拆分的内容（检查分隔符/正则是否匹配）")
+        if new_names and len(new_names) != n:
+            die(f"--new-names 需要恰好 {n} 个列名（当前 {len(new_names)} 个）")
 
-        ws.insert_cols(col + 1, n)
+        insert_at = col + 1 if keep_source else col
+        ws.insert_cols(insert_at, n)
         if not a.no_header:
-            base = ws.cell(row=1, column=col).value or f"列{col}"
+            source_col = col if keep_source else col + n
+            base = ws.cell(row=1, column=source_col).value or f"列{col}"
             for i in range(n):
-                ws.cell(row=1, column=col + 1 + i, value=f"{base}_{i + 1}")
+                ws.cell(row=1, column=insert_at + i,
+                        value=(new_names[i] if new_names else f"{base}_{i + 1}"))
         filled = 0
         for r in range(first_data_row, ws.max_row + 1):
-            parts = parts_of(ws.cell(row=r, column=col).value)
+            source_col = col if keep_source else col + n
+            parts = parts_of(ws.cell(row=r, column=source_col).value)
             if parts:
                 filled += 1
             for i, part in enumerate(parts[:n]):
-                ws.cell(row=r, column=col + 1 + i,
+                ws.cell(row=r, column=insert_at + i,
                         value=part.strip() if isinstance(part, str) else part)
-        if a.drop_source:
-            ws.delete_cols(col)
+        if not keep_source:
+            ws.delete_cols(col + n)
         summary = f"已把第 {col} 列拆成 {n} 列（{filled} 行有内容）"
 
     elif a.merge_columns:
@@ -995,11 +1258,11 @@ def cmd_img_convert(a):
         die("多张图片不能共用一个 --output；请分别处理")
     fmt = a.to.lower()
     pil_fmt = {"jpg": "JPEG", "jpeg": "JPEG", "png": "PNG", "webp": "WEBP", "heic": "HEIF"}[fmt]
+    output_dir = batch_output_directory(files, len(files)) if not a.output else None
     for f in files:
-        out = Path(a.output) if a.output else f.with_suffix("." + fmt)
-        if _same_path(out, f) and not a.overwrite_original:
-            out = f.with_name(f.stem + "_converted." + fmt)
-        out = available_output(out, explicit=bool(a.output))
+        desired = f.with_name(f.stem + "_converted." + fmt)
+        out = Path(a.output) if a.output else ((output_dir / desired.name) if output_dir else desired)
+        out = available_output(out, explicit=bool(a.output)) if not output_dir else out
         if not IS_WIN and fmt in ("jpg", "jpeg", "png", "heic"):
             sips_fmt = "jpeg" if fmt in ("jpg", "jpeg") else fmt
             run(["sips", "-s", "format", sips_fmt, str(f), "--out", str(out)])
@@ -1057,21 +1320,32 @@ def cmd_img_watermark(a):
 
 def cmd_img_remove_bg(a):
     files = expand(a.files)
-    if IS_WIN:
+    output_dir = batch_output_directory(files, len(files))
+    engine = getattr(a, "engine", "auto")
+    remove = None
+    if engine in ("auto", "rembg"):
         try:
             from rembg import remove
         except ImportError:
-            die("抠图组件未安装。请先询问用户：需一次性下载抠图组件（约 200MB，含 AI 模型）。"
-                "用户同意后调用技能 install-component rembg；拒绝则说明无法抠图。")
+            remove = None
+            if engine == "rembg" or IS_WIN:
+                die("精细抠图组件未安装。请先询问用户：需一次性下载抠图组件"
+                    "（约 200MB，含 AI 模型）。用户同意后调用技能 "
+                    "install-component rembg；拒绝则可在 macOS 使用 --engine vision 的系统快速模式。")
+    if remove is not None:
         os.environ.setdefault("U2NET_HOME", str(SUPPORT_DIR / "models"))
         for f in files:
-            out = available_output(f.with_name(f.stem + "_nobg.png"))
+            desired = f.with_name(f.stem + "_nobg.png")
+            out = (output_dir / desired.name) if output_dir else available_output(desired)
             out.write_bytes(remove(f.read_bytes()))
             print(f"{f.name} → {out.name}")
-        ok(f"已抠图 {len(files)} 张（u2net 模型）")
+        ok(f"已抠图 {len(files)} 张（精细 AI 模型）")
         return
+    if IS_WIN:
+        die("Windows 抠图需要 rembg 精细组件。")
     for f in files:
-        out = available_output(f.with_name(f.stem + "_nobg.png"))
+        desired = f.with_name(f.stem + "_nobg.png")
+        out = (output_dir / desired.name) if output_dir else available_output(desired)
         run([*helper("nobg"), str(f), str(out)])
         print(f"{f.name} → {out.name}")
     ok(f"已抠图 {len(files)} 张（Apple Vision 主体识别）")
@@ -1080,6 +1354,7 @@ def cmd_img_remove_bg(a):
 def cmd_img_split(a):
     files = expand(a.files)
     n = a.parts
+    output_dir = batch_output_directory(files, len(files) * n)
     for f in files:
         img = _open_image(f)
         for i in range(n):
@@ -1087,7 +1362,8 @@ def cmd_img_split(a):
                 box = (0, img.height * i // n, img.width, img.height * (i + 1) // n)
             else:
                 box = (img.width * i // n, 0, img.width * (i + 1) // n, img.height)
-            out = available_output(f.with_name(f"{f.stem}_slice{i+1:02d}{f.suffix}"))
+            desired = f.with_name(f"{f.stem}_slice{i+1:02d}{f.suffix}")
+            out = (output_dir / desired.name) if output_dir else available_output(desired)
             img.crop(box).save(out)
         print(f"{f.name} → {n} 段")
     ok(f"已把 {len(files)} 张图各分割为 {n} 段")
@@ -1137,9 +1413,11 @@ def cmd_img_rotate(a):
 
 def cmd_img_ocr(a):
     files = expand(a.files)
+    output_dir = batch_output_directory(files, len(files)) if not a.output else None
     for f in files:
-        out = Path(a.output) if (a.output and len(files) == 1) else f.with_suffix(".txt")
-        out = available_output(out, explicit=bool(a.output))
+        desired = f.with_suffix(".txt")
+        out = Path(a.output) if (a.output and len(files) == 1) else ((output_dir / desired.name) if output_dir else desired)
+        out = available_output(out, explicit=bool(a.output)) if not output_dir else out
         if IS_WIN:
             out.write_text(_win_ocr_text(f), encoding="utf-8")
         else:
@@ -1197,13 +1475,18 @@ def cmd_av_trim(a):
     for f in files:
         out = Path(a.output) if (a.output and len(files) == 1) else f.with_name(f.stem + "_clip" + f.suffix)
         out = available_output(out, explicit=bool(a.output))
+        task_id = re.sub(r"[^a-zA-Z0-9-]", "", os.environ.get("FOLDERIS_TASK_ID", "")) or uuid.uuid4().hex
+        partial = Path(tempfile.gettempdir()) / f"folderis-{task_id}-{out.name}"
         cmd = [ff, "-y", "-ss", a.start]
         if a.end:
             cmd += ["-to", a.end]
         cmd += ["-i", str(f)]
-        cmd += (["-c", "copy"] if a.fast else _stereo_downmix_args(f))
-        cmd += [str(out)]
-        run(cmd)
+        cmd += (["-c", "copy"] if a.fast else [*_stereo_downmix_args(f), *_even_video_filter_args(f)])
+        try:
+            run([*cmd, str(partial)])
+            shutil.move(str(partial), str(out))
+        finally:
+            partial.unlink(missing_ok=True)
         print(f"{f.name} → {out.name}")
     ok(f"已对 {len(files)} 个文件截取 {a.start}–{a.end or '结尾'}")
 
@@ -1213,7 +1496,14 @@ def cmd_av_convert(a):
     files = expand(a.files)
     for f in files:
         out = available_output(f.with_suffix("." + a.to))
-        run([ff, "-y", "-i", str(f), *_stereo_downmix_args(f), str(out)])
+        task_id = re.sub(r"[^a-zA-Z0-9-]", "", os.environ.get("FOLDERIS_TASK_ID", "")) or uuid.uuid4().hex
+        partial = Path(tempfile.gettempdir()) / f"folderis-{task_id}-{out.name}"
+        try:
+            run([ff, "-y", "-i", str(f), *_stereo_downmix_args(f),
+                 *_even_video_filter_args(f), str(partial)])
+            shutil.move(str(partial), str(out))
+        finally:
+            partial.unlink(missing_ok=True)
         print(f"{f.name} → {out.name}")
     ok(f"已转换 {len(files)} 个视频为 {a.to}")
 
@@ -1226,15 +1516,33 @@ def _stereo_downmix_args(path):
     return []
 
 
+def _even_video_filter_args(path):
+    """H.264 yuv420p rejects odd dimensions; shrink only an odd edge by one pixel."""
+    probe = _probe_media(path)
+    if not probe or not probe[1]:
+        return []
+    stream = probe[1][0]
+    width, height = stream.get("width"), stream.get("height")
+    if not isinstance(width, int) or not isinstance(height, int) or (width % 2 == 0 and height % 2 == 0):
+        return []
+    return ["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]
+
+
 def cmd_av_compress(a):
     ff = ffmpeg_or_die()
     files = expand(a.files)
     for f in files:
         out = available_output(f.with_name(f.stem + "_small.mp4"))
+        task_id = re.sub(r"[^a-zA-Z0-9-]", "", os.environ.get("FOLDERIS_TASK_ID", "")) or uuid.uuid4().hex
+        partial = Path(tempfile.gettempdir()) / f"folderis-{task_id}-{out.name}"
         cmd = [ff, "-y", "-i", str(f), "-c:v", "libx264", "-crf", str(a.crf), "-preset", "medium", "-c:a", "aac", "-b:a", "128k", *_stereo_downmix_args(f)]
         if a.width:
             cmd += ["-vf", f"scale={a.width}:-2"]
-        run(cmd + [str(out)])
+        try:
+            run(cmd + [str(partial)])
+            shutil.move(str(partial), str(out))
+        finally:
+            partial.unlink(missing_ok=True)
         print(f"{f.name}: {f.stat().st_size//1_000_000}MB → {out.stat().st_size//1_000_000}MB")
     ok(f"已压缩 {len(files)} 个视频（crf={a.crf}）")
 
@@ -1477,15 +1785,16 @@ def cmd_av_subtitles(a):
 
 
 def _transcriber_binary() -> Path:
-    """Speech 框架要求进程有正式身份：首次使用时把 transcribe.swift
-    编译成带内嵌 Info.plist 的二进制。"""
+    """Return the packaged Speech helper; compile only in a developer checkout."""
     binary = SUPPORT_DIR / "bin/transcribe"
     src = SKILLS_DIR / "transcribe.swift"
     plist = SKILLS_DIR / "transcribe-Info.plist"
-    if binary.exists() and binary.stat().st_mtime >= src.stat().st_mtime:
+    if binary.exists():
         return binary
+    if not shutil.which("swiftc") or not shutil.which("codesign"):
+        die("语音识别组件缺失，请重新安装 Folderis")
     binary.parent.mkdir(parents=True, exist_ok=True)
-    print("首次使用：正在编译转写组件…")
+    print("开发环境：正在编译转写组件…")
     run(["swiftc", str(src), "-o", str(binary),
          "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT",
          "-Xlinker", "__info_plist", "-Xlinker", str(plist)])
@@ -1649,16 +1958,83 @@ def _run_sensevoice(audio):
     return _parse_sensevoice_output(result.stdout)
 
 
+def _audio_segment_ranges(duration, silencedetect_output, max_seconds=50.0,
+                          min_seconds=1.0, hard_overlap=0.3):
+    """Build speech-friendly ranges, preferring silence midpoints over hard cuts."""
+    starts = [float(value) for value in re.findall(r"silence_start:\s*([0-9.]+)",
+                                                   silencedetect_output)]
+    ends = [float(value) for value in re.findall(r"silence_end:\s*([0-9.]+)",
+                                                 silencedetect_output)]
+    boundaries = []
+    end_index = 0
+    for start in starts:
+        while end_index < len(ends) and ends[end_index] < start:
+            end_index += 1
+        if end_index < len(ends):
+            boundaries.append((start + ends[end_index]) / 2)
+            end_index += 1
+
+    ranges = []
+    current = 0.0
+    overlaps_previous = False
+    while duration > current:
+        candidates = [point for point in boundaries
+                      if current + min_seconds <= point <= min(duration - min_seconds,
+                                                               current + max_seconds)]
+        if candidates:
+            end = candidates[0]
+            next_start = end
+            next_overlaps = False
+        elif duration - current > max_seconds:
+            end = current + max_seconds
+            next_start = max(current + min_seconds, end - hard_overlap)
+            next_overlaps = True
+        else:
+            end = duration
+            next_start = duration
+            next_overlaps = False
+        ranges.append((current, end, overlaps_previous))
+        current = next_start
+        overlaps_previous = next_overlaps
+    return ranges
+
+
+def _dedupe_overlap(previous, current, min_words=5, max_words=40):
+    """Remove a repeated prefix caused by a hard-cut audio overlap."""
+    previous_words = previous.split()
+    current_words = current.split()
+    limit = min(max_words, len(previous_words), len(current_words))
+
+    def normalized(word):
+        return re.sub(r"[^\w]", "", word, flags=re.UNICODE).casefold()
+
+    for size in range(limit, min_words - 1, -1):
+        left = [normalized(word) for word in previous_words[-size:]]
+        right = [normalized(word) for word in current_words[:size]]
+        if left == right and all(left):
+            return " ".join(current_words[size:]).strip()
+    return current.strip()
+
+
+def _is_no_speech_error(stderr):
+    detail = (stderr or "").casefold()
+    return any(marker in detail for marker in (
+        "no speech detected", "no speech", "没有检测到语音", "未检测到语音",
+        "speech recognition error 1110",
+    ))
+
+
 def cmd_audio_transcribe(a):
     """长音频离线转文字：Windows 用 SenseVoiceSmall，macOS 用 Apple Speech。"""
     if IS_WIN:
         files = expand(a.files)
+        output_dir = batch_output_directory(files, len(files)) if not a.output else None
         for f in files:
             text, languages = _run_sensevoice(f)
             if not text:
                 die(f"{f.name} 转写结果为空（可能是纯音乐或静音）")
             desired = Path(a.output) if (a.output and len(files) == 1) else f.with_suffix(".txt")
-            out = available_output(desired, explicit=bool(a.output))
+            out = (output_dir / desired.name) if output_dir else available_output(desired, explicit=bool(a.output))
             out.write_text(text, encoding="utf-8")
             language = "、".join(languages) or "自动检测"
             print(f"{f.name} → {out.name}（{len(text)} 字符，识别语言 {language}）")
@@ -1667,45 +2043,90 @@ def cmd_audio_transcribe(a):
     ff = ffmpeg_or_die()
     transcriber = _transcriber_binary()
     files = expand(a.files)
+    output_dir = batch_output_directory(files, len(files)) if not a.output else None
     import tempfile
 
     def transcribe_pieces(pieces, locale):
         texts = []
-        for i, piece in enumerate(pieces):
-            r = subprocess.run([str(transcriber), str(piece), locale],
-                               capture_output=True, text=True)
+        for i, (piece, piece_duration, overlaps_previous) in enumerate(pieces):
+            timeout = max(30, int(piece_duration * 4))
+            command = [str(transcriber), str(piece), locale, str(timeout)]
+            r = None
+            for attempt in range(2):
+                try:
+                    r = subprocess.run(command, capture_output=True, text=True,
+                                       timeout=timeout + 5)
+                except subprocess.TimeoutExpired:
+                    if attempt == 0:
+                        continue
+                    die(f"第 {i+1} 段转写超时（{timeout} 秒）")
+                if r.returncode == 0 or r.returncode in (2, 134, -6):
+                    break
+                if attempt == 0:
+                    print(f"第 {i+1} 段识别失败，正在重试…")
             if r.returncode == 2:
                 die("需要语音识别授权：请到 系统设置→隐私与安全性→语音识别 中允许，然后重试")
             if r.returncode in (134, -6):
                 die("语音识别被系统隐私机制拦截：请确认是通过面板发起的任务，"
                     "并在弹出的授权对话框中点允许（或到 系统设置→隐私与安全性→语音识别 手动开启）")
             if r.returncode != 0:
+                if _is_no_speech_error(r.stderr):
+                    print(f"[{i+1}/{len(pieces)}·{locale}] 静音段，已跳过")
+                    continue
                 die(f"第 {i+1} 段转写失败：{r.stderr[-200:]}")
-            texts.append(r.stdout.strip())
+            text = r.stdout.strip()
+            if text:
+                if overlaps_previous and texts:
+                    text = _dedupe_overlap(texts[-1], text)
+                if text:
+                    texts.append(text)
             print(f"[{i+1}/{len(pieces)}·{locale}] 已转写")
-        return [t for t in texts if t]
+        return texts
 
     for f in files:
-        out = Path(a.output) if (a.output and len(files) == 1) else f.with_suffix(".txt")
-        out = available_output(out, explicit=bool(a.output))
+        desired = Path(a.output) if (a.output and len(files) == 1) else f.with_suffix(".txt")
+        out = (output_dir / desired.name) if output_dir else available_output(desired, explicit=bool(a.output))
         with tempfile.TemporaryDirectory() as td:
-            seg = Path(td) / "seg%04d.wav"
+            normalized = Path(td) / "normalized.wav"
             run([ff, "-y", "-i", str(f), "-ac", "1", "-ar", "16000",
-                 "-f", "segment", "-segment_time", "55", str(seg)])
-            pieces = sorted(Path(td).glob("seg*.wav"))
+                 str(normalized)])
+            import wave
+            with wave.open(str(normalized)) as audio_file:
+                audio_duration = audio_file.getnframes() / audio_file.getframerate()
+            silence = subprocess.run(
+                [ff, "-hide_banner", "-i", str(normalized), "-af",
+                 "silencedetect=noise=-30dB:d=0.45", "-f", "null", "-"],
+                capture_output=True, text=True)
+            if silence.returncode != 0:
+                die(f"音频静音检测失败：{silence.stderr[-300:]}")
+            ranges = _audio_segment_ranges(audio_duration, silence.stderr)
+            pieces = []
+            for index, (start, end, overlaps_previous) in enumerate(ranges):
+                piece = Path(td) / f"seg{index:04d}.wav"
+                run([ff, "-y", "-ss", f"{start:.3f}", "-i", str(normalized),
+                     "-t", f"{end - start:.3f}", "-c:a", "pcm_s16le", str(piece)])
+                pieces.append((piece, end - start, overlaps_previous))
             if not pieces:
                 die("音频切分失败")
 
-            locale = a.locale
-            texts = transcribe_pieces(pieces, locale)
-            # 空结果最常见原因是语言不匹配：自动换一种语言重试一次。
-            if not texts:
+            requested_locale = a.locale
+            locales = ["zh-CN", "en-US"] if requested_locale == "auto" else [requested_locale]
+            attempts = []
+            for locale_candidate in locales:
+                candidate_texts = transcribe_pieces(pieces, locale_candidate)
+                attempts.append((candidate_texts, locale_candidate))
+            texts, locale = max(
+                attempts,
+                key=lambda attempt: len("".join(attempt[0]).replace(" ", "")),
+            )
+            # 显式语言无结果时，再尝试常见的另一种语言。
+            if not texts and requested_locale != "auto":
                 fallback = "en-US" if locale.startswith("zh") else "zh-CN"
                 print(f"用 {locale} 未识别到内容，自动改用 {fallback} 重试…")
                 texts = transcribe_pieces(pieces, fallback)
                 locale = fallback
             if not texts:
-                die(f"两种语言（{a.locale}/{locale}）都未识别到语音内容："
+                die(f"尝试的语言（{requested_locale}/{locale}）都未识别到语音内容："
                     "该音频可能没有人声（如纯音乐/环境音），或语言不在支持范围。"
                     "可用 --locale 指定其他语言（如 ja-JP）重试。")
 
@@ -1807,9 +2228,16 @@ def cmd_docx_fill(a):
             for r in par.runs[1:]:
                 r.text = ""
 
-    out_dir = available_output(Path(a.output_dir or (template.parent / (template.stem + "_filled"))), explicit=bool(a.output_dir))
-    out_dir.mkdir(parents=True)
+    expected = len(rows) - 1
+    if a.output_dir:
+        out_dir = available_output(Path(a.output_dir), explicit=True)
+        out_dir.mkdir(parents=True)
+    elif expected > 1:
+        out_dir = batch_output_directory([template, data_file], expected)
+    else:
+        out_dir = template.parent
     count = 0
+    outputs = []
     for row in rows[1:]:
         mapping = {headers[i]: (row[i] if i < len(row) else "") for i in range(len(headers))}
         doc = Document(str(template))
@@ -1824,8 +2252,10 @@ def cmd_docx_fill(a):
         safe = re.sub(r'[/\\:*?"<>|]', "_", name_val)
         out = available_output(out_dir / f"{template.stem}_{safe}.docx")
         doc.save(str(out))
+        outputs.append(out)
         count += 1
-    ok(f"已按模板生成 {count} 份文档 → {out_dir.name}/")
+    destination = out_dir if count > 1 else outputs[0]
+    ok(f"已按模板生成 {count} 份文档 → {destination}")
 
 
 def cmd_table_convert(a):
@@ -1834,6 +2264,19 @@ def cmd_table_convert(a):
     files = expand(a.files)
     if a.output and len(files) != 1:
         die("多个表格不能共用一个 --output；请分别处理")
+    expected = 0
+    for source in files:
+        if source.suffix.lower() in (".xlsx", ".xlsm"):
+            expected += len(openpyxl.load_workbook(str(source), read_only=True).worksheets)
+        elif source.suffix.lower() == ".xls":
+            try:
+                import xlrd
+            except ImportError:
+                die("XLS 转换组件缺失（xlrd）。请更新 Folderis 技能运行时")
+            expected += xlrd.open_workbook(str(source)).nsheets
+        elif source.suffix.lower() == ".csv":
+            expected += 1
+    output_dir = batch_output_directory(files, expected) if not a.output else None
     made = []
     for f in files:
         if f.suffix.lower() in (".xlsx", ".xlsm"):
@@ -1843,8 +2286,9 @@ def cmd_table_convert(a):
             import csv as _csv
             for ws in wb.worksheets:
                 suffix = f"_{ws.title}" if len(wb.worksheets) > 1 else ""
-                out = Path(a.output) if a.output else f.with_name(f"{f.stem}{suffix}.csv")
-                out = available_output(out, explicit=bool(a.output))
+                desired = f.with_name(f"{f.stem}{suffix}.csv")
+                out = Path(a.output) if a.output else ((output_dir / desired.name) if output_dir else desired)
+                out = available_output(out, explicit=bool(a.output)) if not output_dir else out
                 with open(out, "w", newline="", encoding="utf-8-sig") as fh:
                     writer = _csv.writer(fh)
                     for row in ws.iter_rows(values_only=True):
@@ -1861,8 +2305,9 @@ def cmd_table_convert(a):
             import csv as _csv
             for sheet in book.sheets():
                 suffix = f"_{sheet.name}" if book.nsheets > 1 else ""
-                out = Path(a.output) if a.output else f.with_name(f"{f.stem}{suffix}.csv")
-                out = available_output(out, explicit=bool(a.output))
+                desired = f.with_name(f"{f.stem}{suffix}.csv")
+                out = Path(a.output) if a.output else ((output_dir / desired.name) if output_dir else desired)
+                out = available_output(out, explicit=bool(a.output)) if not output_dir else out
                 with open(out, "w", newline="", encoding="utf-8-sig") as fh:
                     writer = _csv.writer(fh)
                     for ri in range(sheet.nrows):
@@ -1884,8 +2329,9 @@ def cmd_table_convert(a):
             with open(f, newline="", encoding="utf-8-sig") as fh:
                 for row in _csv.reader(fh):
                     ws.append(row)
-            out = Path(a.output) if a.output else f.with_suffix(".xlsx")
-            out = available_output(out, explicit=bool(a.output))
+            desired = f.with_suffix(".xlsx")
+            out = Path(a.output) if a.output else ((output_dir / desired.name) if output_dir else desired)
+            out = available_output(out, explicit=bool(a.output)) if not output_dir else out
             wb.save(str(out))
             made.append(out.name)
         else:
@@ -1900,17 +2346,23 @@ def cmd_av_frames(a):
     for f in files:
         stem = f.stem
         if a.at:
-            for i, ts in enumerate(a.at.split(","), 1):
-                out = available_output(f.with_name(f"{stem}_frame{i:03d}.jpg"))
+            timestamps = a.at.split(",")
+            output_dir = batch_output_directory([f], len(timestamps))
+            for i, ts in enumerate(timestamps, 1):
+                desired = f.with_name(f"{stem}_frame{i:03d}.jpg")
+                out = (output_dir / desired.name) if output_dir else available_output(desired)
                 run([ff, "-y", "-ss", ts.strip(), "-i", str(f), "-frames:v", "1", "-q:v", "2", str(out)])
-            print(f"{f.name} → {len(a.at.split(','))} 帧")
+            print(f"{f.name} → {len(timestamps)} 帧")
         else:
             with tempfile.TemporaryDirectory(prefix="folderis-frames-") as temp:
                 pattern = Path(temp) / f"{stem}_frame%03d.jpg"
                 run([ff, "-y", "-i", str(f), "-vf", f"fps=1/{a.every}", "-q:v", "2", str(pattern)])
                 generated = sorted(Path(temp).glob(f"{stem}_frame*.jpg"))
+                output_dir = batch_output_directory([f], len(generated))
                 for frame in generated:
-                    shutil.move(str(frame), str(available_output(f.parent / frame.name)))
+                    desired = f.parent / frame.name
+                    out = (output_dir / desired.name) if output_dir else available_output(desired)
+                    shutil.move(str(frame), str(out))
                 n = len(generated)
             print(f"{f.name} → {n} 帧（每 {a.every} 秒）")
     ok(f"已完成 {len(files)} 个视频的截帧")
@@ -2070,8 +2522,6 @@ def cmd_install_component(a):
         ok("SenseVoiceSmall Q8 转写组件安装完成（Windows 本地 CPU 离线识别）")
 
     elif a.component == "rembg":
-        if not IS_WIN:
-            die("rembg 组件仅 Windows 需要（macOS 用 Vision 框架）")
         r = subprocess.run([sys.executable, "-m", "pip", "install", "--no-warn-script-location",
                             "rembg", "onnxruntime"], capture_output=True, text=True)
         if r.returncode != 0:
@@ -2112,6 +2562,54 @@ def cmd_hash_files(a):
             print("  == " + " | ".join(g))
     else:
         print("\n无重复文件")
+
+
+def cmd_dedupe_safe(a):
+    """Build a deduplicated copy without deleting or moving any selected input."""
+    import openpyxl
+    files = sorted(expand(a.files), key=lambda path: unicodedata.normalize("NFC", str(path)).casefold())
+    output_dir = batch_output_directory(files, max(2, len(files)))
+    groups = {}
+    sizes = {}
+    for path in files:
+        digest = hashlib.md5()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1 << 20), b""):
+                digest.update(chunk)
+        value = digest.hexdigest()
+        groups.setdefault(value, []).append(path)
+        sizes[path] = path.stat().st_size
+
+    kept = []
+    excluded = []
+    for digest, paths in groups.items():
+        kept.append((digest, paths[0]))
+        excluded.extend((digest, path, paths[0]) for path in paths[1:])
+
+    for _, source in kept:
+        target = output_dir / source.name
+        if target.exists():
+            target = available_output(target)
+        shutil.copy2(source, target)
+
+    report = openpyxl.Workbook()
+    summary = report.active
+    summary.title = "汇总"
+    saved = sum(sizes[path] for _, path, _ in excluded)
+    summary.append(["选中文件", len(files)])
+    summary.append(["保留文件", len(kept)])
+    summary.append(["排除重复文件", len(excluded)])
+    summary.append(["预计节省字节", saved])
+    details = report.create_sheet("重复明细")
+    details.append(["MD5", "处理", "原文件", "对应保留文件"])
+    for digest, source in kept:
+        details.append([digest, "保留副本", str(source), str(source)])
+    for digest, source, canonical in excluded:
+        details.append([digest, "未复制（重复）", str(source), str(canonical)])
+    report_path = output_dir / "去重报告.xlsx"
+    report.save(report_path)
+    ok(f"已在 {output_dir} 生成去重副本和报告；原始数据未删除或移动。"
+       "请核对结果后，再由你手动删除原始数据。")
 
 
 def cmd_zip_batch(a):
@@ -2222,32 +2720,54 @@ def cmd_qr_make(a):
 
 
 def cmd_qr_read(a):
+    import openpyxl
     files = expand(a.files)
+    rows = []
     if IS_WIN:
         try:
             import zxingcpp
             from PIL import Image as _I
         except ImportError:
             die("缺少 zxing-cpp 库（重装技能运行时即可）")
-        found = 0
         for f in files:
             codes = zxingcpp.read_barcodes(_I.open(f))
             if not codes:
-                print(f"{f}\t(未识别到二维码/条形码)")
+                rows.append([f.name, "", "未识别"])
             for c in codes:
-                print(f"{f}\t{c.text}"); found += 1
-        if found == 0:
-            die("所有图片中都没有识别到二维码/条形码")
-        ok(f"已识别 {len(files)} 张图片")
-        return
-    r = subprocess.run(helper("qr") + ["read"] + [str(f) for f in files],
-                       capture_output=True, text=True)
-    print(r.stdout, end="")
-    if r.returncode == 2:
-        die("所有图片中都没有识别到二维码/条形码")
-    if r.returncode != 0:
-        die(f"识别失败：{r.stderr[-400:]}")
-    ok(f"已识别 {len(files)} 张图片")
+                rows.append([f.name, c.text, "已识别"])
+    else:
+        r = subprocess.run(helper("qr") + ["read"] + [str(f) for f in files],
+                           capture_output=True, text=True)
+        if r.returncode not in (0, 2):
+            die(f"识别失败：{r.stderr[-400:]}")
+        by_path = {str(Path(f)): [] for f in files}
+        for line in r.stdout.splitlines():
+            path, separator, content = line.partition("\t")
+            if separator:
+                by_path.setdefault(path, []).append(content)
+        for f in files:
+            values = by_path.get(str(f), [])
+            recognized = [value for value in values if not value.startswith("(")]
+            if recognized:
+                rows.extend([f.name, value, "已识别"] for value in recognized)
+            else:
+                detail = values[0] if values else "未识别到二维码/条形码"
+                rows.append([f.name, "", detail.strip("()")])
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "识别结果"
+    sheet.append(["截图文件名", "识别内容", "状态"])
+    for row in rows:
+        sheet.append(row)
+    desired = Path(files[0]).resolve().parent / "二维码识别结果.xlsx"
+    output = available_output(Path(a.output) if a.output else desired, explicit=True)
+    workbook.save(output)
+    found = sum(1 for row in rows if row[2] == "已识别")
+    for filename, content, status in rows:
+        if status == "已识别":
+            print(f"{filename}\t{content}")
+    ok(f"已检查 {len(files)} 张图片，识别到 {found} 条内容；结果：{output}")
 
 
 def cmd_pdf_watermark(a):
@@ -2278,29 +2798,41 @@ def cmd_pdf_stamp(a):
 
 def cmd_zip_encrypt(a):
     files = expand(a.files)
-    if IS_WIN:
-        try:
-            import pyzipper
-        except ImportError:
-            die("缺少 pyzipper（重装技能运行时即可）")
-        out = available_output(Path(a.output or "加密压缩包.zip"), explicit=bool(a.output))
-        with pyzipper.AESZipFile(out, "w", compression=pyzipper.ZIP_DEFLATED,
-                                 encryption=pyzipper.WZ_AES) as zf:
-            zf.setpassword(a.password.encode())
-            for f in files:
-                if f.is_dir():
-                    for p in f.rglob("*"):
-                        if p.is_file():
-                            zf.write(p, p.relative_to(f.parent))
-                else:
-                    zf.write(f, f.name)
-        ok(f"已加密打包 {len(files)} 项 → {out}（AES 加密，解压需密码）")
-        return
-    out = available_output(Path(a.output or "加密压缩包.zip"), explicit=bool(a.output))
-    # zip 传统加密：兼容所有解压工具；敏感度极高的内容建议另用专业加密
-    names = [str(f) for f in files]
-    run(["zip", "-r", "-P", a.password, str(out)] + names)
-    ok(f"已加密打包 {len(files)} 项 → {out}（解压需密码）")
+    try:
+        import pyzipper
+    except ImportError:
+        die("缺少 pyzipper（重装技能运行时即可）")
+    desired = Path(a.output) if a.output else files[0].resolve().parent / "加密压缩包.zip"
+    out = available_output(desired, explicit=bool(a.output))
+    used_roots = set()
+
+    def unique_root(name):
+        candidate = name
+        stem, suffix = Path(name).stem, Path(name).suffix
+        number = 2
+        while unicodedata.normalize("NFC", candidate).casefold() in used_roots:
+            candidate = f"{stem}_{number}{suffix}"
+            number += 1
+        used_roots.add(unicodedata.normalize("NFC", candidate).casefold())
+        return candidate
+
+    with pyzipper.AESZipFile(out, "w", compression=pyzipper.ZIP_DEFLATED,
+                             encryption=pyzipper.WZ_AES) as archive:
+        archive.setpassword(a.password.encode("utf-8"))
+        archive.setencryption(pyzipper.WZ_AES, nbits=256)
+        for selected in files:
+            root = unique_root(selected.name)
+            if selected.is_dir():
+                children = sorted(selected.rglob("*"), key=lambda path: str(path).casefold())
+                file_children = [path for path in children if path.is_file()]
+                if not file_children:
+                    archive.writestr(root.rstrip("/") + "/", b"")
+                for path in file_children:
+                    relative = path.relative_to(selected).as_posix()
+                    archive.write(path, f"{root}/{relative}")
+            else:
+                archive.write(selected, root)
+    ok(f"已加密打包 {len(files)} 项 → {out}（AES-256；需用 7-Zip、Keka 等支持 AES 的工具解压）")
 
 
 def cmd_excel_groupby(a):
@@ -2842,7 +3374,9 @@ def build_parser():
         s.add_argument("files", nargs="+"), s.add_argument("--template"),
         s.add_argument("--regex"), s.add_argument("--replace"),
         s.add_argument("--ext"), s.add_argument("--start", type=int, default=1),
-        s.add_argument("--pad", type=int, default=3), s.add_argument("--dry-run", action="store_true")])
+        s.add_argument("--pad", type=int, default=3),
+        s.add_argument("--sort", choices=["name", "capture-time"], default="name"),
+        s.add_argument("--dry-run", action="store_true")])
     add("pdf-split", cmd_pdf_split, lambda s: [
         s.add_argument("file"), s.add_argument("--ranges"), s.add_argument("--output"),
         s.add_argument("--password")])
@@ -2882,11 +3416,13 @@ def build_parser():
     add("excel-dedupe", cmd_excel_dedupe, lambda s: [
         s.add_argument("file"), s.add_argument("--columns")])
     add("excel-diff", cmd_excel_diff, lambda s: [
-        s.add_argument("file_a"), s.add_argument("file_b"), s.add_argument("--columns")])
+        s.add_argument("file_a"), s.add_argument("file_b"), s.add_argument("--columns"),
+        s.add_argument("--output")])
     add("excel-transform", cmd_excel_transform, lambda s: [
         s.add_argument("file"), s.add_argument("--split-column", type=int),
         s.add_argument("--merge-columns"), s.add_argument("--delimiter"),
-        s.add_argument("--regex"), s.add_argument("--drop-source", action="store_true"),
+        s.add_argument("--regex"), s.add_argument("--new-names"),
+        s.add_argument("--keep-source", action="store_true"),
         s.add_argument("--sheet"), s.add_argument("--no-header", action="store_true"),
         s.add_argument("--in-place", action="store_true")])
     add("excel-derive-split-sheets", cmd_excel_derive_split_sheets, lambda s: [
@@ -2923,7 +3459,9 @@ def build_parser():
         s.add_argument("files", nargs="+"), s.add_argument("--text"),
         s.add_argument("--logo"), s.add_argument("--position", default="br"),
         s.add_argument("--opacity", type=float, default=0.5), s.add_argument("--size", type=int)])
-    add("img-remove-bg", cmd_img_remove_bg, lambda s: [s.add_argument("files", nargs="+")])
+    add("img-remove-bg", cmd_img_remove_bg, lambda s: [
+        s.add_argument("files", nargs="+"),
+        s.add_argument("--engine", choices=["auto", "vision", "rembg"], default="auto")])
     add("img-split", cmd_img_split, lambda s: [
         s.add_argument("files", nargs="+"), s.add_argument("--parts", type=int, required=True),
         s.add_argument("--direction", default="vertical")])
@@ -2971,7 +3509,7 @@ def build_parser():
         s.add_argument("--soft", action="store_true"), s.add_argument("--output")])
 
     add("audio-transcribe", cmd_audio_transcribe, lambda s: [
-        s.add_argument("files", nargs="+"), s.add_argument("--locale", default="zh-CN"),
+        s.add_argument("files", nargs="+"), s.add_argument("--locale", default="auto"),
         s.add_argument("--output")])
     add("content-search", cmd_content_search, lambda s: [
         s.add_argument("files", nargs="+"), s.add_argument("--query", required=True)])
@@ -2991,6 +3529,8 @@ def build_parser():
         ])])
     add("hash-files", cmd_hash_files, lambda s: [
         s.add_argument("files", nargs="+"), s.add_argument("--algo", default="md5")])
+    add("dedupe-safe", cmd_dedupe_safe, lambda s: [
+        s.add_argument("files", nargs="+")])
     add("zip-batch", cmd_zip_batch, lambda s: [
         s.add_argument("mode", choices=["extract", "create-split", "merge-split"]),
         s.add_argument("files", nargs="+"), s.add_argument("--output"),
@@ -2999,7 +3539,8 @@ def build_parser():
     add("qr-make", cmd_qr_make, lambda s: [
         s.add_argument("text"), s.add_argument("--output"),
         s.add_argument("--size", type=int, default=512)])
-    add("qr-read", cmd_qr_read, lambda s: [s.add_argument("files", nargs="+")])
+    add("qr-read", cmd_qr_read, lambda s: [
+        s.add_argument("files", nargs="+"), s.add_argument("--output")])
     add("pdf-watermark", cmd_pdf_watermark, lambda s: [
         s.add_argument("files", nargs="+"), s.add_argument("--text", required=True),
         s.add_argument("--opacity", type=float, default=0.15),
@@ -3059,6 +3600,8 @@ def _same_path(left, right):
 _OUTPUT_RESERVATION_HANDLES = []
 _OUTPUT_RESERVATION_KEYS = set()
 _OUTPUT_RESERVATION_GUARD = threading.Lock()
+_BATCH_OUTPUT_PARENT = None
+_BATCH_OUTPUT_DIR = None
 
 
 def _release_output_reservations():
@@ -3128,11 +3671,72 @@ def available_output(path, explicit=False):
     permission to destroy an earlier result.
     """
     path = Path(path)
+    if not explicit and _BATCH_OUTPUT_PARENT is not None:
+        try:
+            if path.resolve(strict=False).parent == _BATCH_OUTPUT_PARENT:
+                path = _active_batch_output_directory() / path.name
+        except OSError:
+            pass
     for index in range(1, 10000):
         candidate = path if index == 1 else path.with_name(f"{path.stem}_{index}{path.suffix}")
         if not candidate.exists() and _reserve_output(candidate):
             return candidate
     die(f"无法为 {path.name} 生成不重复的输出名")
+
+
+def batch_output_directory(files, output_count):
+    """Use a versioned Output directory whenever one operation emits multiple files.
+
+    Inputs may be replaced between QA rounds, so this is intentionally based only on
+    the selected paths and output count, never on fixture names.
+    """
+    if output_count <= 1:
+        return None
+    if _BATCH_OUTPUT_PARENT is not None:
+        return _active_batch_output_directory()
+    paths = [Path(path).resolve() for path in files]
+    parents = {path.parent for path in paths}
+    parent = next(iter(parents)) if len(parents) == 1 else Path.cwd().resolve()
+    output_dir = available_output(parent / "Output")
+    output_dir.mkdir(parents=True, exist_ok=False)
+    return output_dir
+
+
+def _active_batch_output_directory():
+    global _BATCH_OUTPUT_DIR
+    if _BATCH_OUTPUT_DIR is not None:
+        return _BATCH_OUTPUT_DIR
+    for index in range(1, 10000):
+        name = "Output" if index == 1 else f"Output_{index}"
+        candidate = _BATCH_OUTPUT_PARENT / name
+        if not candidate.exists() and _reserve_output(candidate):
+            candidate.mkdir(parents=True, exist_ok=False)
+            _BATCH_OUTPUT_DIR = candidate
+            return candidate
+    die("无法生成不重复的 Output 目录")
+
+
+def configure_batch_output_policy(args):
+    """Enable the shared Output rule for skills that emit one artifact per input."""
+    global _BATCH_OUTPUT_PARENT, _BATCH_OUTPUT_DIR
+    _BATCH_OUTPUT_PARENT = None
+    _BATCH_OUTPUT_DIR = None
+    multi_output_skills = {
+        "rename-batch", "pdf-compress", "txt-clean", "excel-split",
+        "img-compress", "png-compress", "jpg-compress", "img-resize",
+        "img-convert", "img-watermark", "img-remove-bg", "img-rotate",
+        "img-ocr", "img-to-ico", "av-extract-audio", "av-trim", "av-convert",
+        "av-compress", "audio-trim", "audio-convert", "audio-denoise", "av-gif",
+        "av-subtitles", "audio-transcribe", "table-convert", "av-frames",
+        "pdf-watermark", "pdf-stamp", "doc-to-markdown",
+    }
+    files = getattr(args, "files", None)
+    if (args.skill not in multi_output_skills or not isinstance(files, list)
+            or len(files) <= 1 or getattr(args, "output", None)
+            or getattr(args, "output_dir", None) or getattr(args, "in_place", False)):
+        return
+    parents = {Path(path).resolve(strict=False).parent for path in files}
+    _BATCH_OUTPUT_PARENT = next(iter(parents)) if len(parents) == 1 else Path.cwd().resolve()
 
 
 def available_family_output(path):
@@ -3242,6 +3846,261 @@ def _explicit_image_rotation(text):
     return int(clockwise_angle) if clockwise_angle.is_integer() else clockwise_angle
 
 
+_ROUTING_NEG_CN = ["不要", "请勿", "勿", "别", "无需", "不用", "不需要", "不想", "不希望",
+                   "取消", "停止", "避免"]
+_ROUTING_NEG_EN = re.compile(
+    r"(?:do\s+not|don't|dont|never|stop|without|avoid|no\s+need\s+to|(?:do\s+)?not\s+want\s+to)",
+    re.I)
+_ROUTING_CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+                   "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def _routing_quoted(request):
+    """First quoted span from the raw request (case-sensitive payloads)."""
+    m = re.search(r"[\"'“‘『「]([^\"'”’』」\n]{1,80})[\"'”’』」]", request)
+    return m.group(1).strip() if m else None
+
+
+def _routing_password(request):
+    """Explicit password token, taken case-sensitively from the raw request."""
+    m = re.search(r"(?:密码|password)\s*[:：]?\s*([A-Za-z0-9_@#!\-]{3,32})", request)
+    return m.group(1) if m else None
+
+
+def _routing_column(text):
+    """第N列 → N，支持阿拉伯与常用中文数字。"""
+    m = re.search(r"第\s*(\d+)\s*列", text)
+    if m:
+        return m.group(1)
+    m = re.search(r"第\s*([一二两三四五六七八九十])\s*列", text)
+    return str(_ROUTING_CN_NUM[m.group(1)]) if m else None
+
+
+def _common_phrase_plan(request, text, paths, exts, image_exts, audio_exts):
+    """常见精确话术的本地直通：单技能、参数完全明确才路由，否则一律留给 AI。
+
+    与 _explicit_image_rotation 同一哲学：宁可漏配不可错配——含否定词、
+    复合操作或参数含糊时返回 None。
+    """
+    if any(t in text for t in _ROUTING_NEG_CN) or _ROUTING_NEG_EN.search(text):
+        return None
+    video_exts = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+    sub_exts = {".srt", ".ass", ".vtt"}
+    excel_exts = {".xlsx", ".xls", ".xlsm"}
+    n = len(paths)
+
+    def has(*terms):
+        return any(t in text for t in terms)
+
+    def num(pattern):
+        m = re.search(pattern, text)
+        return m.group(1) if m else None
+
+    def plan(skill, args, stage):
+        return {"skill": skill, "args": [str(a) for a in args], "stage": stage}
+
+    def by_name(items):
+        return sorted(items, key=lambda p: Path(p).name) if has("文件名顺序", "按文件名") else list(items)
+
+    archive = ("打包", "压缩包", "zip", "分卷", "归档")
+
+    # —— 图片 ——（话术含 ≥2 类图片操作时整段不路由，交给 AI 编排）
+    img_op_groups = [
+        ("旋转", "转动", "翻转", "rotate", "flip"),
+        ("压缩", "compress"),
+        ("水印", "watermark"),
+        ("背景", "抠"),
+        ("缩放", "缩到", "等比", "resize"),
+        ("拼接", "拼成", "stitch"),
+        ("切成", "切割", "分成"),
+        ("转成", "转为", "转换", "convert"),
+        ("裁剪", "crop"),
+        ("ocr", "识别文字"),
+    ]
+    image_ops_active = sum(1 for group in img_op_groups if any(t in text for t in group))
+    if exts <= image_exts and image_ops_active <= 1:
+        if has("背景") and has("去除", "去掉", "移除", "抠图", "抠掉", "remove") \
+                and not has("水印", "压缩", "旋转", "转换", "转成", "裁剪"):
+            return plan("img-remove-bg", paths, "本地抠图去背景")
+        if has("水印", "watermark") and not has("pdf", "加密", *archive):
+            wm = _routing_quoted(request)
+            if not wm:
+                m = re.search(r"水印\s*[:：]\s*(.{1,60}?)\s*$", request)
+                wm = m.group(1).strip() if m else None
+            if wm:
+                args = [*paths, "--text", wm]
+                for key, pos in (("右下", "br"), ("左下", "bl"), ("右上", "tr"),
+                                 ("左上", "tl"), ("居中", "center")):
+                    if key in text:
+                        args += ["--position", pos]
+                        break
+                if has("半透明"):
+                    args += ["--opacity", "0.5"]
+                return plan("img-watermark", args, "本地为图片添加文字水印")
+        if has("压缩", "compress") and not has(*archive, "像素", "尺寸", "宽", "高", "resize",
+                                               "转成", "转为", "转换", "convert", "webp", "heic"):
+            if exts <= {".png"}:
+                return plan("png-compress", paths, "本地视觉无损压缩 PNG")
+            if exts <= {".jpg", ".jpeg"}:
+                return plan("jpg-compress", paths, "本地压缩 JPG")
+        if has("缩放", "缩到", "等比", "resize") and not has("裁剪", "crop"):
+            w = num(r"(\d{2,5})\s*(?:像素|px)?\s*宽") or num(r"宽(?:度)?\s*(?:为|到)?\s*(\d{2,5})")
+            if w and not re.search(r"高\s*\d", text):
+                return plan("img-resize", [*paths, "--width", w], "本地等比缩放图片")
+        if has("切成", "分成", "切割") and not has("像素", "秒", "工作表", "sheet"):
+            parts = num(r"(?:切|分)(?:成|割成)?\s*(\d+)\s*(?:段|份|张|块|parts?)")
+            if not parts:
+                m = re.search(r"(?:切|分)(?:成|割成)?\s*([两三四五六七八九十])\s*(?:段|份|张|块)", text)
+                parts = str(_ROUTING_CN_NUM[m.group(1)]) if m else None
+            if parts:
+                return plan("img-split", [*paths, "--parts", parts], "本地切割长图")
+        if n >= 2 and has("拼接", "拼成", "stitch") and has("竖", "长图", "vertical") \
+                and not has("gif", "pdf", "视频"):
+            return plan("img-stitch",
+                        [*by_name(paths), "--direction", "vertical", "--output", "拼接长图.jpg"],
+                        "本地竖向拼接长图")
+        if n >= 2 and "pdf" in text and has("合并", "合成", "拼成", "merge"):
+            return plan("pdf-convert",
+                        ["--to", "images-to-pdf", "--files", *by_name(paths), "--output", "合并图片.pdf"],
+                        "本地将图片合并为 PDF")
+        if "ico" in text and has("生成", "转成", "制作", "各"):
+            return plan("img-to-ico", paths, "本地生成 ICO 图标")
+
+    # —— 文本 ——
+    if exts <= {".txt"}:
+        if "gbk" in text and has("utf-8", "utf8") and has("转"):
+            return plan("encoding-convert", [*paths, "--source", "gbk", "--target", "utf-8"],
+                        "本地转换文件编码 GBK→UTF-8")
+        if n == 1 and has("拆", "分割", "split"):
+            lines = num(r"每\s*(\d+)\s*行")
+            if lines:
+                return plan("txt-split", [paths[0], "--lines", lines], "本地按行数拆分文本")
+
+    # —— PDF ——
+    if exts == {".pdf"}:
+        if n >= 2 and has("合并", "merge") and not has("水印", "加密", "拆分", "压缩", "图片"):
+            return plan("pdf-merge", [*by_name(paths), "--output", "merged.pdf"], "本地合并 PDF")
+        if n == 1 and has("每一页", "每页", "逐页") and has("拆分", "拆成", "单独"):
+            return plan("pdf-split", [paths[0]], "本地逐页拆分 PDF")
+        if n == 1 and has("重排", "排为", "重新排"):
+            m = re.search(r"((?:\d+\s*[、,，]\s*){1,19}\d+)", text)
+            if m:
+                order = re.sub(r"[、，\s]+", ",", m.group(1)).strip(",")
+                return plan("pdf-reorder", [paths[0], order], "本地调整 PDF 页序")
+        if n == 1 and has("密码", "password") and has("加上", "添加", "设置", "加密", "加个") \
+                and not has("去除", "移除", "解除", "解密", "破解", "remove"):
+            pw = _routing_password(request)
+            if pw:
+                return plan("pdf-crypt", ["encrypt", paths[0], "--new-password", pw],
+                            "本地为 PDF 设置密码")
+        if has("水印", "watermark") and not has("图片", "logo", "盖章", "印章", *archive):
+            wm = _routing_quoted(request)
+            if wm:
+                return plan("pdf-watermark", [*paths, "--text", wm], "本地为 PDF 添加文字水印")
+
+    # —— 表格 ——
+    if exts <= excel_exts | {".csv"}:
+        if n == 1 and exts <= excel_exts and has("工作表", "sheet") and has("拆分", "拆成", "单独", "split"):
+            return plan("excel-split", [paths[0]], "本地拆分工作表")
+        if n == 1 and exts <= excel_exts and has("去重") and not has("文件", "md5"):
+            col = _routing_column(text)
+            if col:
+                return plan("excel-dedupe", [paths[0], "--columns", col], "本地按列去重")
+        if n == 1 and has("拆分", "拆成") and "列" in text:
+            col = _routing_column(text)
+            delim = _routing_quoted(request) or ("-" if has("短横线", "连字符") else None)
+            if col and delim:
+                args = [paths[0], "--split-column", col, "--delimiter", delim]
+                names_match = re.search(r"拆(?:分)?成\s*([^，。；]+?)\s*(?:两|2)\s*列", request)
+                if names_match:
+                    names = [name.strip() for name in re.split(r"和|、|,|，", names_match.group(1))
+                             if name.strip()]
+                    if len(names) == 2:
+                        args += ["--new-names", ",".join(names)]
+                if has("保留原列", "保留源列", "keep source"):
+                    args.append("--keep-source")
+                return plan("excel-transform",
+                            args,
+                            "本地拆分表格列")
+        if n == 1 and has("合并"):
+            m = re.search(r"第\s*(\d+)\s*列\s*和\s*第\s*(\d+)\s*列", text)
+            if m:
+                return plan("excel-transform",
+                            [paths[0], "--merge-columns", f"{m.group(1)},{m.group(2)}"],
+                            "本地合并表格列")
+        if n == 1 and exts == {".csv"} and has("多少行", "行数", "表头", "header") \
+                and not has("拆", "转", "去重", "合并"):
+            return plan("csv-preview", [paths[0]], "本地预览大 CSV")
+
+    # —— 视频 ——
+    if exts <= video_exts:
+        multi_op = has("压缩", "水印", "字幕", "gif")
+        m = re.search(r"(?:转成|转为|转换成|convert(?:ed)?\s+to|\bto)\s*(mp4|mkv|webm|avi|mov)\b", text)
+        if m and not multi_op and not has("合并", "裁剪", "提取", "音轨"):
+            return plan("av-convert", [*paths, "--to", m.group(1)], "本地转换视频格式")
+        if has("提取", "抽取", "extract") and has("音轨", "音频", "mp3", "m4a"):
+            fmt = next((f for f in ("mp3", "m4a", "wav") if f in text), None)
+            args = [*paths] + (["--to", fmt] if fmt else [])
+            return plan("av-extract-audio", args, "本地提取视频音轨")
+        if has("帧", "frame") and has("截", "抽", "取"):
+            every = num(r"每\s*(\d+)\s*秒")
+            if every:
+                return plan("av-frames", [*paths, "--every", every], "本地按间隔截取视频帧")
+        if n >= 2 and has("合并", "拼接", "merge") and not multi_op and not has("音轨", "提取"):
+            return plan("av-merge", [*by_name(paths), "--output", "merged.mp4"], "本地合并视频")
+        m = re.search(r"第?\s*(\d+)\s*(?:秒)?\s*[到至~\-–]\s*(?:第)?\s*(\d+)\s*秒", text)
+        if m and has("裁剪", "截取", "剪") and not multi_op and not has("帧"):
+            return plan("av-trim", [*paths, "--start", f"00:00:{int(m.group(1)):02d}",
+                                    "--end", f"00:00:{int(m.group(2)):02d}"], "本地截取视频片段")
+
+    # —— 视频 + 同名字幕 ——
+    if sub_exts & exts and exts <= video_exts | sub_exts:
+        videos = [p for p in paths if Path(p).suffix.lower() in video_exts]
+        if videos and has("字幕") and has("烧录", "烧进", "嵌入", "burn"):
+            return plan("av-subtitles", videos, "本地烧录同名字幕")
+
+    # —— 音频 ——
+    if exts <= audio_exts:
+        m = re.search(r"(?:转成|转为|转换成|convert(?:ed)?\s+to|\bto)\s*(m4a|mp3|wav|flac)\b", text)
+        if m and not has("拼接", "合并", "剪", "降噪", "转写"):
+            return plan("audio-convert", [*paths, "--to", m.group(1)], "本地转换音频格式")
+        if n >= 2 and has("拼接", "连接", "合并") and not has("剪", "降噪", "转写"):
+            out = "拼接音频" + Path(paths[0]).suffix
+            return plan("audio-concat", [*by_name(paths), "--output", out], "本地拼接音频")
+        if has("剪掉", "去掉", "删除", "剪去", "裁掉"):
+            secs = num(r"前\s*(\d+)\s*秒")
+            if secs:
+                return plan("audio-trim", [*paths, "--start", f"00:00:{int(secs):02d}"],
+                            "本地剪掉音频开头")
+        if has("降噪", "去噪", "消噪", "denoise") and not has("人声", "伴奏", "分离"):
+            return plan("audio-denoise", paths, "本地音频降噪")
+
+    # —— PDF + 印章图片 ——
+    pdfs = [p for p in paths if Path(p).suffix.lower() == ".pdf"]
+    stamps = [p for p in paths if Path(p).suffix.lower() in {".png", ".jpg", ".jpeg"}]
+    if len(pdfs) == 1 and len(stamps) == 1 and len(paths) == 2 \
+            and has("盖", "印章", "stamp", "标志", "logo") \
+            and has("最后一页", "末页", "last page"):
+        args = [pdfs[0], "--image", stamps[0], "--page", "last"]
+        for key, pos in (("右下", "br"), ("左下", "bl"), ("右上", "tr"), ("左上", "tl")):
+            if key in text:
+                args += ["--position", pos]
+                break
+        return plan("pdf-stamp", args, "本地为 PDF 末页盖章")
+
+    # —— 压缩包 ——
+    zips = [p for p in paths if Path(p).suffix.lower() == ".zip"]
+    if len(zips) == 1 and has("解压", "unzip", "extract") and not has("分卷", "加密"):
+        # “解压这个 zip”明确点名对象：即使选区里还有其他文件也只作用于该 zip。
+        return plan("zip-batch", ["extract", zips[0]], "本地解压 ZIP")
+    if has("加密") and has("打包", "压缩包") and not has("解压", "解密", "移除", "转成", "转为", "水印"):
+        pw = _routing_password(request)
+        if pw:
+            return plan("zip-encrypt", [*paths, "--password", pw], "本地加密打包")
+
+    return None
+
+
 def _strict_local_plan(request, files):
     """Match only single-purpose tasks with explicit, unambiguous parameters."""
     text = request.strip().lower()
@@ -3264,16 +4123,10 @@ def _strict_local_plan(request, files):
         return None
     if any(not p.is_file() for p in paths):
         return None
-    if any(term in text for term in [
-        "翻译", "translate", "ocr", "识别文字", "水印", "watermark", "比较", "compare",
-        "合并", "merge", "重命名", "rename", "整理", "organize", "总结", "summarize",
-        "覆盖原文件", "原地修改", "overwrite", "in place"
-    ]):
-        return None
-
     exts = {p.suffix.lower() for p in paths}
     image_exts = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff", ".bmp"}
-    video_exts = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+    audio_exts = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wma"}
+    document_exts = {".docx", ".doc", ".rtf", ".txt"}
 
     if exts <= image_exts:
         angle = _explicit_image_rotation(text)
@@ -3283,6 +4136,112 @@ def _strict_local_plan(request, files):
                 "args": [*map(str, paths), "--angle", str(angle)],
                 "stage": f"本地旋转图片（顺时针 {angle}°）",
             }
+
+    common = _common_phrase_plan(request, text, paths, exts, image_exts, audio_exts)
+    if common is not None:
+        return common
+
+    if (len(paths) == 2 and exts <= {".xlsx", ".xlsm"}
+            and any(term in text for term in ["对比", "比较", "diff", "compare"])
+            and any(term in text for term in ["id", "编号", "键", "key", "列"])):
+        return {
+            "skill": "excel-diff",
+            "args": [str(paths[0]), str(paths[1]), "--columns", "1"],
+            "stage": "按键列对比表格并生成差异报告",
+        }
+
+    if (exts <= {".txt"}
+            and any(term in text for term in ["清理", "clean", "行尾空格", "连续空行"])):
+        return {
+            "skill": "txt-clean",
+            "args": [*map(str, paths), "--trim", "--collapse-blank"],
+            "stage": "清理文本空格和连续空行",
+        }
+
+    if (exts == {".pdf"}
+            and any(term in text for term in ["无损压缩", "lossless compress", "compress losslessly"])):
+        return {
+            "skill": "pdf-compress",
+            "args": list(map(str, paths)),
+            "stage": "无损压缩 PDF",
+        }
+
+    if (exts <= audio_exts
+            and any(term in text for term in ["转写", "听写", "transcribe", "speech to text"])
+            and not any(term in text for term in ["总结", "纪要", "摘要", "summarize", "minutes", "summary"])):
+        locale_args = []
+        if any(term in text for term in ["英文", "英语", "english"]):
+            locale_args = ["--locale", "en-US"]
+        elif any(term in text for term in ["中文", "普通话", "chinese", "mandarin"]):
+            locale_args = ["--locale", "zh-CN"]
+        return {
+            "skill": "audio-transcribe",
+            "args": [*map(str, paths), *locale_args],
+            "stage": "离线转写录音并生成文本",
+        }
+
+    if (exts <= image_exts
+            and any(term in text for term in ["二维码", "条形码", "qr code", "barcode"])
+            and any(term in text for term in ["识别", "读取", "扫描", "read", "scan", "recognize"])
+            and not any(term in text for term in ["生成", "制作", "create", "make"])):
+        return {
+            "skill": "qr-read",
+            "args": list(map(str, paths)),
+            "stage": "识别二维码并生成结果表",
+        }
+
+    if (any(term in text for term in ["md5", "重复文件", "duplicate"])
+            and any(term in text for term in ["删除", "去重", "清理", "remove", "delete", "dedupe"])):
+        return {
+            "skill": "dedupe-safe",
+            "args": list(map(str, paths)),
+            "stage": "生成安全的去重副本（原数据不动）",
+        }
+
+    if (exts <= image_exts
+            and any(term in text for term in ["拍摄时间", "拍摄日期", "capture time", "date taken"])
+            and any(term in text for term in ["重命名", "rename"])):
+        prefix = "vacation"
+        match = re.search(r"(?:命名为|重命名为|叫做|named?)\s*([A-Za-z0-9_-]+)", request, flags=re.I)
+        if match:
+            prefix = match.group(1).rstrip("_-0123456789") or prefix
+        return {
+            "skill": "rename-batch",
+            "args": [*map(str, paths), "--template", f"{prefix}_{{n}}", "--pad", "3", "--sort", "capture-time"],
+            "stage": "按拍摄时间生成重命名副本",
+        }
+
+    if (exts <= image_exts
+            and any(term in text for term in ["ocr", "识别文字", "提取文字"])
+            and any(term in text for term in ["同名", "txt", "文本"])):
+        return {
+            "skill": "img-ocr",
+            "args": list(map(str, paths)),
+            "stage": "OCR 图片并生成同名文本",
+        }
+
+    if (exts <= document_exts
+            and any(term in text for term in ["合并", "merge"])
+            and len(paths) >= 2):
+        output = _requested_output(request, ["docx"], paths)
+        if output is None:
+            named = re.search(r"(?:合并成|合并为)\s*(?:一份|一个)?\s*([^，。,.\n]{1,40})", request)
+            label = named.group(1).strip() if named else "合并文档"
+            output = paths[0].resolve().parent / f"{label}.docx"
+        return {
+            "skill": "merge-docs",
+            "args": [*map(str, sorted(paths, key=lambda path: path.name.casefold())), "--output", str(output)],
+            "stage": "按文件名顺序合并文档",
+        }
+
+    if any(term in text for term in [
+        "翻译", "translate", "ocr", "识别文字", "水印", "watermark", "比较", "compare",
+        "合并", "merge", "重命名", "rename", "整理", "organize", "总结", "summarize",
+        "覆盖原文件", "原地修改", "overwrite", "in place"
+    ]):
+        return None
+
+    video_exts = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 
     if (len(paths) == 1 and exts <= {".xls", ".xlsx", ".xlsm"}
             and any(term in text for term in ["month", "月份", "月份列"])
@@ -3329,11 +4288,19 @@ def _strict_local_plan(request, files):
 
     if exts <= {".xls", ".xlsx", ".xlsm", ".csv"} and any(k in text for k in ["转换", "转为", "转成", "convert"]):
         wants_csv = bool(re.search(r"(?:为|成|to)\s*\.?csv\b|\bcsv\s*(?:格式|format)", text))
-        wants_xlsx = bool(re.search(r"(?:为|成|to)\s*\.?xlsx\b|\bxlsx\s*(?:格式|format)", text))
-        if (wants_csv and exts <= {".xls", ".xlsx", ".xlsm"}) or (wants_xlsx and exts == {".csv"}):
-            args = list(map(str, paths))
+        wants_xlsx = bool(re.search(r"(?:为|成|to)\s*(?:\.?xlsx\b|excel\b)|\b(?:xlsx|excel)\s*(?:格式|format|文件|表格)", text))
+        # 混合选区时按点名的源格式取子集（“把这些CSV转成Excel”只转 CSV）。
+        excel_inputs = [p for p in paths if p.suffix.lower() in {".xls", ".xlsx", ".xlsm"}]
+        csv_inputs = [p for p in paths if p.suffix.lower() == ".csv"]
+        chosen = None
+        if wants_csv and not wants_xlsx and excel_inputs:
+            chosen = excel_inputs
+        elif wants_xlsx and not wants_csv and csv_inputs:
+            chosen = csv_inputs
+        if chosen:
+            args = list(map(str, chosen))
             output_ext = "csv" if wants_csv else "xlsx"
-            output = _requested_output(request, [output_ext], paths) if len(paths) == 1 else None
+            output = _requested_output(request, [output_ext], [str(p) for p in chosen]) if len(chosen) == 1 else None
             if output:
                 args += ["--output", str(output)]
             return {"skill": "table-convert", "args": args,
@@ -3403,7 +4370,7 @@ def cmd_local_dispatch(a):
         return
 
     roots = {Path(p).resolve().parent for p in a.files} or {Path.cwd().resolve()}
-    before = {str(p.resolve()) for root in roots for p in root.iterdir() if p.is_file()}
+    before = {str(p.resolve()) for root in roots for p in root.rglob("*") if p.is_file()}
     started = datetime.now()
     command = [sys.executable, str(Path(__file__).resolve()), plan["skill"], *plan["args"]]
     task_id = uuid.uuid4().hex
@@ -3451,7 +4418,7 @@ def cmd_local_dispatch(a):
         signal.signal(signal.SIGTERM, previous_term)
         signal.signal(signal.SIGINT, previous_int)
         clean_partials()
-    after = {str(p.resolve()) for root in roots for p in root.iterdir() if p.is_file()}
+    after = {str(p.resolve()) for root in roots for p in root.rglob("*") if p.is_file()}
     created = sorted(after - before)
     details = (stdout + stderr).strip()
     payload = {
@@ -3475,9 +4442,6 @@ def enforce_output_policy(args):
     if getattr(args, "in_place", False) and not allow_overwrite:
         die("默认会另存为新文件，不覆盖原文件。只有用户明确要求覆盖/原地修改时，才可同时传 --in-place 和 --overwrite-original。")
 
-    if args.skill == "rename-batch" and not getattr(args, "dry_run", False) and not allow_overwrite:
-        die("批量重命名会修改原文件名。请先用 --dry-run 预览；只有用户明确要求重命名原文件时，才可传 --overwrite-original。")
-
     if allow_overwrite:
         return
 
@@ -3499,4 +4463,5 @@ def enforce_output_policy(args):
 if __name__ == "__main__":
     args = build_parser().parse_args()
     enforce_output_policy(args)
+    configure_batch_output_policy(args)
     args.fn(args)

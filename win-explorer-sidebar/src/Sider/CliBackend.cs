@@ -97,9 +97,15 @@ public sealed class CliBackend
     {
         var key = kind.ToString();
         var args = new List<string>();
+        // Claude Code 经 --append-system-prompt 注入技能简报；codex/cursor 无对应
+        // 参数，简报并入提示词开头（与 macOS 端 runCLIBackendTurn 对齐）。
+        var skillsBrief = SkillRunner.CliSkillsBrief;
+        if (skillsBrief.Length > 0 && kind != BackendKind.ClaudeCode)
+            prompt = skillsBrief + "\n\n" + prompt;
         if (kind == BackendKind.ClaudeCode)
         {
             args.AddRange(["-p", prompt, "--output-format", "stream-json", "--verbose"]);
+            if (skillsBrief.Length > 0) args.AddRange(["--append-system-prompt", skillsBrief]);
             if (sessions.TryGetValue(key, out var sid)) args.AddRange(["--resume", sid]);
             args.AddRange(yolo ? ["--dangerously-skip-permissions"] : ["--permission-mode", "acceptEdits"]);
         }
@@ -151,6 +157,16 @@ public sealed class CliBackend
             if (!pathEntries.Contains(cliDirectory, StringComparer.OrdinalIgnoreCase))
                 psi.Environment["PATH"] = cliDirectory + Path.PathSeparator
                     + (psi.Environment["PATH"] ?? "");
+        }
+        // 技能简报中承诺的专用工具目录（ffmpeg 等下载组件）对 CLI 可见。
+        var skillsBin = Path.Combine(SkillRunner.RuntimeRoot, "bin");
+        if (Directory.Exists(skillsBin))
+        {
+            var entries = (psi.Environment["PATH"] ?? "")
+                .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+            if (!entries.Contains(skillsBin, StringComparer.OrdinalIgnoreCase))
+                psi.Environment["PATH"] = (psi.Environment["PATH"] ?? "")
+                    + Path.PathSeparator + skillsBin;
         }
         // 净化可能干扰 CLI 自身认证的变量（按前缀）
         foreach (var k in psi.Environment.Keys.Where(k =>

@@ -79,16 +79,27 @@ final class FinderContext: ObservableObject {
                 .split(separator: "\n", omittingEmptySubsequences: false)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-            let folder = lines.first.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
-            let selection = lines.dropFirst()
+            let folder = lines.first.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).standardizedFileURL }
+            let reportedSelection = lines.dropFirst()
                 .filter { !$0.isEmpty }
-                .map { URL(fileURLWithPath: $0) }
+                .map { URL(fileURLWithPath: $0).standardizedFileURL }
+            // Finder's application-level `selection` can briefly belong to a
+            // different window than `front Finder window`. Never combine that
+            // stale selection with the front window's working directory.
+            let selection = Self.selectionInFrontFolder(reportedSelection, folder: folder)
 
             DispatchQueue.main.async {
                 self?.automationDenied = false
                 self?.currentFolder = folder
                 self?.selectedFiles = selection
             }
+        }
+    }
+
+    nonisolated static func selectionInFrontFolder(_ selection: [URL], folder: URL?) -> [URL] {
+        guard let folder = folder?.standardizedFileURL else { return [] }
+        return selection.filter {
+            $0.standardizedFileURL.deletingLastPathComponent() == folder
         }
     }
 }

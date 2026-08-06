@@ -1,4 +1,5 @@
 import hashlib
+import csv
 import json
 import shutil
 import subprocess
@@ -113,8 +114,46 @@ class ExcelLocalWorkflowTests(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["skill"], "img-convert")
         self.assertEqual(len(payload["outputs"]), 1)
-        self.assertEqual([path.name for path in self.folder.glob("*.png")], ["image.png"])
+        self.assertEqual([path.name for path in self.folder.glob("*.png")], ["image_converted.png"])
         self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), original_hash)
+
+    def test_csv_column_split_replaces_source_with_named_columns(self):
+        source = self.folder / "contacts.csv"
+        source.write_text(
+            "联系人-电话,城市,备注\n张三-13800138000,北京,重点客户\n李四-13900139000,上海,\n",
+            encoding="utf-8-sig",
+        )
+        original_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+
+        subprocess.run(
+            [sys.executable, str(SKILLS), "excel-transform", source.name,
+             "--split-column", "1", "--delimiter", "-", "--new-names", "姓名,电话"],
+            cwd=self.folder,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        output = self.folder / "contacts_transformed.csv"
+        with output.open(newline="", encoding="utf-8-sig") as stream:
+            rows = list(csv.reader(stream))
+        self.assertEqual(rows[0], ["姓名", "电话", "城市", "备注"])
+        self.assertEqual(rows[1], ["张三", "13800138000", "北京", "重点客户"])
+        self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), original_hash)
+
+    def test_csv_column_split_can_keep_source(self):
+        source = self.folder / "contacts.csv"
+        source.write_text("联系人-电话,城市\n张三-13800138000,北京\n", encoding="utf-8-sig")
+        subprocess.run(
+            [sys.executable, str(SKILLS), "excel-transform", source,
+             "--split-column", "1", "--delimiter", "-",
+             "--new-names", "姓名,电话", "--keep-source"],
+            cwd=self.folder, text=True, capture_output=True, check=True)
+        with (self.folder / "contacts_transformed.csv").open(
+                newline="", encoding="utf-8-sig") as stream:
+            rows = list(csv.reader(stream))
+        self.assertEqual(rows[0], ["联系人-电话", "姓名", "电话", "城市"])
+        self.assertEqual(rows[1], ["张三-13800138000", "张三", "13800138000", "北京"])
 
 
 if __name__ == "__main__":
