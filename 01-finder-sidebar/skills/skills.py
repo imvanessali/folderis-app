@@ -482,7 +482,38 @@ def cmd_pdf_compress(a):
 
 
 def cmd_pdf_convert(a):
-    src = Path(a.file) if a.file else None
+    if a.to == "images-to-pdf":
+        files = expand(a.files)
+        imgs = [_open_image(f).convert("RGB") for f in files]
+        out = available_output(Path(a.output or "merged.pdf"), explicit=bool(a.output))
+        imgs[0].save(out, save_all=True, append_images=imgs[1:])
+        ok(f"已把 {len(imgs)} 张图片合成 → {out.name}")
+        return
+
+    # --file 与 --files 统一归并：单文件工具的批量调用不允许触发内部错误。
+    sources = expand(([a.file] if a.file else []) + list(a.files or []))
+    if not sources:
+        die("请用 --file 指定要转换的文件（批量时用 --files）")
+    multi = len(sources) > 1
+    if multi and a.to in ("png", "jpg"):
+        die("PDF 转图片一次只处理一个文件；请逐个调用（每次 --file 一个），"
+            "并为每次调用明确 --pages")
+    out_dir = None
+    if multi:
+        if a.output:
+            out_dir = available_output(Path(a.output), explicit=True)
+            out_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            out_dir = batch_output_directory(sources, len(sources))
+
+    def destination(source, suffix):
+        """单文件按原有规则命名；批量产物统一进 Output（或 --output 目录）。"""
+        desired = source.with_suffix(suffix)
+        if out_dir is not None:
+            return available_output(out_dir / desired.name)
+        return available_output(Path(a.output or desired), explicit=bool(a.output))
+
+    src = sources[0]
     if a.to in ("png", "jpg"):
         if not a.pages:
             die("PDF 转图片必须明确指定 --pages（如 --pages 1 或 --pages all），不能默认处理全部页面")
@@ -532,57 +563,71 @@ def cmd_pdf_convert(a):
             raise
         ok(f"已按 --pages {requested} 渲染 {n} 页 → {result_path}")
     elif a.to == "txt":
-        text = _pdf_ocr_text(src, max(a.dpi, 220), a.password, a.pages)
-        out = available_output(Path(a.output or src.with_suffix(".txt")), explicit=bool(a.output))
-        out.write_text(text, encoding="utf-8")
-        ok(f"已逐页 OCR 提取文本 → {out.name}（{len(text)} 字符）")
+        outs = []
+        total_chars = 0
+        for source in sources:
+            text = _pdf_ocr_text(source, max(a.dpi, 220), a.password, a.pages)
+            out = destination(source, ".txt")
+            out.write_text(text, encoding="utf-8")
+            outs.append(out)
+            total_chars += len(text)
+        if multi:
+            ok(f"已逐页 OCR 提取 {len(outs)} 个 PDF 的文本 → {out_dir}/（共 {total_chars} 字符）")
+        else:
+            ok(f"已逐页 OCR 提取文本 → {outs[0].name}（{total_chars} 字符）")
     elif a.to == "docx":
         soffice = shutil.which("soffice") or (
             "/Applications/LibreOffice.app/Contents/MacOS/soffice"
             if Path("/Applications/LibreOffice.app").exists() else None)
-        if soffice:
-            out = available_output(Path(a.output or src.with_suffix(".docx")), explicit=bool(a.output))
-            temp_dir = Path(tempfile.mkdtemp(prefix="folderis-docx-"))
-            try:
-                run([soffice, "--headless", "--convert-to", "docx", "--outdir", str(temp_dir), str(src)])
-                generated = temp_dir / src.with_suffix(".docx").name
-                if not generated.exists():
-                    die("LibreOffice 没有生成 DOCX")
-                shutil.move(str(generated), str(out))
-            finally:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            ok(f"已高保真转换 → {out.name}（LibreOffice）")
-        else:
-            text = "\n\n".join(p.extract_text() or "" for p in _reader(src, a.password).pages)
-            handle = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", encoding="utf-8", delete=False)
-            tmp = Path(handle.name)
-            handle.write(text)
-            handle.close()
-            out = available_output(Path(a.output or src.with_suffix(".docx")), explicit=bool(a.output))
-            try:
-                run(["textutil", "-convert", "docx", str(tmp), "-output", str(out)])
-            finally:
-                tmp.unlink(missing_ok=True)
-            ok(f"已转换（纯文字级，排版/表格/图片未保留）→ {out.name}。如需高保真请安装 LibreOffice")
-    elif a.to == "pdf":  # docx/doc/rtf/html/txt → pdf（AppKit + Core Text 原生排版）
-        if src.suffix.lower() in (".docx", ".doc", ".txt", ".rtf", ".html", ".htm", ".md"):
-            out = available_output(Path(a.output or src.with_suffix(".pdf")), explicit=bool(a.output))
-            if IS_WIN:
-                _win_office_to_pdf(src, out)
+        outs = []
+        for source in sources:
+            out = destination(source, ".docx")
+            if soffice:
+                temp_dir = Path(tempfile.mkdtemp(prefix="folderis-docx-"))
+                try:
+                    run([soffice, "--headless", "--convert-to", "docx",
+                         "--outdir", str(temp_dir), str(source)])
+                    generated = temp_dir / source.with_suffix(".docx").name
+                    if not generated.exists():
+                        die("LibreOffice 没有生成 DOCX")
+                    shutil.move(str(generated), str(out))
+                finally:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
             else:
-                run([*helper("doc2pdf"), str(src), str(out)])
+                text = "\n\n".join(p.extract_text() or ""
+                                   for p in _reader(source, a.password).pages)
+                handle = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", encoding="utf-8", delete=False)
+                tmp = Path(handle.name)
+                handle.write(text)
+                handle.close()
+                try:
+                    run(["textutil", "-convert", "docx", str(tmp), "-output", str(out)])
+                finally:
+                    tmp.unlink(missing_ok=True)
+            outs.append(out)
+        detail = "LibreOffice 高保真" if soffice else "纯文字级，排版/表格/图片未保留，如需高保真请安装 LibreOffice"
+        if multi:
+            ok(f"已转换 {len(outs)} 个文件 → {out_dir}/（{detail}）")
+        else:
+            ok(f"已转换 → {outs[0].name}（{detail}）")
+    elif a.to == "pdf":  # docx/doc/rtf/html/txt → pdf（AppKit + Core Text 原生排版）
+        outs = []
+        for source in sources:
+            if source.suffix.lower() not in (".docx", ".doc", ".txt", ".rtf", ".html", ".htm", ".md"):
+                die(f"暂不支持 {source.suffix} → pdf")
+            out = destination(source, ".pdf")
+            if IS_WIN:
+                _win_office_to_pdf(source, out)
+            else:
+                run([*helper("doc2pdf"), str(source), str(out)])
             if not out.exists() or out.stat().st_size == 0:
                 die("转换失败：输出为空")
-            ok(f"已转换 → {out.name}（{out.stat().st_size // 1024}KB）")
+            outs.append(out)
+        if multi:
+            ok(f"已转换 {len(outs)} 个文件 → {out_dir}/")
         else:
-            die(f"暂不支持 {src.suffix} → pdf")
-    elif a.to == "images-to-pdf":
-        files = expand(a.files)
-        imgs = [_open_image(f).convert("RGB") for f in files]
-        out = available_output(Path(a.output or "merged.pdf"), explicit=bool(a.output))
-        imgs[0].save(out, save_all=True, append_images=imgs[1:])
-        ok(f"已把 {len(imgs)} 张图片合成 → {out.name}")
+            ok(f"已转换 → {outs[0].name}（{outs[0].stat().st_size // 1024}KB）")
     else:
         die(f"未知转换目标 {a.to}")
 
@@ -2612,6 +2657,50 @@ def cmd_dedupe_safe(a):
        "请核对结果后，再由你手动删除原始数据。")
 
 
+def _safe_zip_entries(files):
+    """归档条目清单：仅相对路径（选中项名 + 子路径），NFC/casefold 查重防碰撞。
+
+    macOS 加密与非加密 zip writer 共用，配合 zipfile/pyzipper 写入，
+    非 ASCII 条目名自动带 UTF-8 flag（0x800），Windows 资源管理器不乱码。
+    返回 [(source_path | None, arcname)]；source 为 None 表示空目录占位。
+    """
+    used_roots = set()
+
+    def unique_root(name):
+        candidate = name
+        stem, suffix = Path(name).stem, Path(name).suffix
+        number = 2
+        while unicodedata.normalize("NFC", candidate).casefold() in used_roots:
+            candidate = f"{stem}_{number}{suffix}"
+            number += 1
+        used_roots.add(unicodedata.normalize("NFC", candidate).casefold())
+        return candidate
+
+    entries = []
+    for selected in files:
+        root = unique_root(selected.name)
+        if selected.is_dir():
+            children = sorted(selected.rglob("*"), key=lambda path: str(path).casefold())
+            file_children = [path for path in children if path.is_file()]
+            if not file_children:
+                entries.append((None, root.rstrip("/") + "/"))
+            for path in file_children:
+                relative = path.relative_to(selected).as_posix()
+                entries.append((path, f"{root}/{relative}"))
+        else:
+            entries.append((selected, root))
+    return entries
+
+
+def _volume_size_bytes(spec, default=100 * 1024 * 1024):
+    match = re.match(r"^(\d+)([kmgt]?)$", str(spec).lower())
+    if not match:
+        return default
+    unit = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}.get(
+        match.group(2), 1024 ** 2)
+    return int(match.group(1)) * unit
+
+
 def cmd_zip_batch(a):
     files = expand(a.files)
     if a.mode == "extract":
@@ -2652,7 +2741,23 @@ def cmd_zip_batch(a):
         m = re.match(r"^(\d+)([kmgt]?)$", a.volume_size.lower())
         if m and m.group(2) in ("", "k") and int(m.group(1)) < 64:
             a.volume_size = "64k"
-        run(["zip", "-r", "-s", a.volume_size, str(out), *[str(f) for f in files]])
+        # 先用 Python zipfile 写完整归档：条目仅相对路径、非 ASCII 名带 UTF-8
+        # flag（外壳 zip -r 不设该 flag，Windows 资源管理器会乱码）。
+        staged = out.with_name(f".folderis-zip-{uuid.uuid4().hex}.zip")
+        try:
+            with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for source, arcname in _safe_zip_entries(files):
+                    if source is None:
+                        archive.writestr(arcname, b"")
+                    else:
+                        archive.write(source, arcname)
+            if staged.stat().st_size <= _volume_size_bytes(a.volume_size):
+                shutil.move(str(staged), str(out))
+            else:
+                # 拷贝模式重分卷（实测保留条目 flag_bits，含 0x800）。
+                run(["zip", str(staged), "-s", a.volume_size, "--out", str(out)])
+        finally:
+            staged.unlink(missing_ok=True)
         parts = sorted(out.parent.glob(out.stem + ".z*"))
         ok(f"已创建分卷压缩：{', '.join(p.name for p in parts)}")
     elif a.mode == "merge-split":
@@ -2719,6 +2824,83 @@ def cmd_qr_make(a):
     ok(f"二维码已生成：{out}")
 
 
+def _qr_payload_summary(payload):
+    """结构化载荷（vCard/MECARD/MEBKM/WIFI）的人类可读解析摘要；普通文本返回 None。"""
+    text = (payload or "").strip()
+    if not text:
+        return None
+
+    def semi_fields(body):
+        fields = {}
+        for part in re.split(r"(?<!\\);", body):
+            key, separator, value = part.partition(":")
+            if separator and key.strip():
+                unescaped = value.replace("\\;", ";").replace("\\:", ":").replace("\\\\", "\\")
+                fields.setdefault(key.strip().upper(), unescaped.strip())
+        return fields
+
+    def render(label, pairs):
+        rendered = [f"{name}={value}" for name, value in pairs if value]
+        return f"{label}：{'，'.join(rendered)}" if rendered else None
+
+    upper = text.upper()
+    if upper.startswith("WIFI:"):
+        fields = semi_fields(text[5:])
+        return render("WiFi", [("SSID", fields.get("S")), ("加密", fields.get("T")),
+                               ("密码", fields.get("P")), ("隐藏", fields.get("H"))])
+    if upper.startswith("MECARD:"):
+        fields = semi_fields(text[7:])
+        return render("名片(MECARD)", [("姓名", fields.get("N")), ("电话", fields.get("TEL")),
+                                       ("邮箱", fields.get("EMAIL")), ("单位", fields.get("ORG")),
+                                       ("地址", fields.get("ADR")), ("网址", fields.get("URL"))])
+    if upper.startswith("MEBKM:"):
+        fields = semi_fields(text[6:])
+        return render("书签(MEBKM)", [("标题", fields.get("TITLE")), ("URL", fields.get("URL"))])
+    if "BEGIN:VCARD" in upper:
+        fields = {}
+        for line in text.replace("\r\n", "\n").splitlines():
+            key, separator, value = line.partition(":")
+            if not separator:
+                continue
+            name = key.split(";", 1)[0].strip().upper()
+            fields.setdefault(name, value.strip())
+        display_name = fields.get("FN") or fields.get("N", "").replace(";", " ").strip()
+        return render("名片(vCard)", [("姓名", display_name), ("电话", fields.get("TEL")),
+                                      ("邮箱", fields.get("EMAIL")), ("单位", fields.get("ORG")),
+                                      ("职务", fields.get("TITLE")), ("网址", fields.get("URL"))])
+    # 多行 payload 里内嵌的结构化行（如 case63：URL + 换行 + MEBKM 书签）。
+    for line in text.replace("\r\n", "\n").splitlines():
+        candidate = line.strip()
+        if candidate.upper().startswith(("WIFI:", "MECARD:", "MEBKM:")):
+            return _qr_payload_summary(candidate)
+    return None
+
+
+def _qr_mac_records(stdout):
+    """解析 qr helper 输出：新协议为每码一行 JSON；旧协议 `路径\\t内容` 仍兼容
+    （旧协议下多行 payload 的续行无法归属，会被丢弃——这正是升级 JSON 协议的原因）。"""
+    records = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        if line.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict) and parsed.get("path"):
+                records.append(parsed)
+                continue
+        path, separator, content = line.partition("\t")
+        if not separator:
+            continue
+        if content.startswith("(") and content.endswith(")"):
+            records.append({"path": path, "error": content.strip("()")})
+        else:
+            records.append({"path": path, "payload": content})
+    return records
+
+
 def cmd_qr_read(a):
     import openpyxl
     files = expand(a.files)
@@ -2741,32 +2923,38 @@ def cmd_qr_read(a):
         if r.returncode not in (0, 2):
             die(f"识别失败：{r.stderr[-400:]}")
         by_path = {str(Path(f)): [] for f in files}
-        for line in r.stdout.splitlines():
-            path, separator, content = line.partition("\t")
-            if separator:
-                by_path.setdefault(path, []).append(content)
+        for record in _qr_mac_records(r.stdout):
+            entry = by_path.setdefault(record["path"], [])
+            if record.get("payload") is not None:
+                entry.append(("payload", record["payload"]))
+            else:
+                entry.append(("error", record.get("error") or "未识别到二维码/条形码"))
         for f in files:
             values = by_path.get(str(f), [])
-            recognized = [value for value in values if not value.startswith("(")]
+            recognized = [value for kind, value in values if kind == "payload"]
             if recognized:
                 rows.extend([f.name, value, "已识别"] for value in recognized)
             else:
-                detail = values[0] if values else "未识别到二维码/条形码"
-                rows.append([f.name, "", detail.strip("()")])
+                detail = next((value for kind, value in values if kind == "error"),
+                              "未识别到二维码/条形码")
+                rows.append([f.name, "", detail])
 
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.title = "识别结果"
-    sheet.append(["截图文件名", "识别内容", "状态"])
+    sheet.append(["截图文件名", "识别内容", "状态", "结构化解析"])
     for row in rows:
-        sheet.append(row)
+        summary = _qr_payload_summary(row[1]) if row[2] == "已识别" else None
+        sheet.append([*row, summary])
     desired = Path(files[0]).resolve().parent / "二维码识别结果.xlsx"
     output = available_output(Path(a.output) if a.output else desired, explicit=True)
     workbook.save(output)
     found = sum(1 for row in rows if row[2] == "已识别")
     for filename, content, status in rows:
         if status == "已识别":
-            print(f"{filename}\t{content}")
+            # 回显保持每码一行：payload 里的真实换行以 \n 字面量展示，完整内容在 XLSX。
+            echo = content.replace("\r\n", "\n").replace("\n", "\\n")
+            print(f"{filename}\t{echo}")
     ok(f"已检查 {len(files)} 张图片，识别到 {found} 条内容；结果：{output}")
 
 
@@ -2804,34 +2992,15 @@ def cmd_zip_encrypt(a):
         die("缺少 pyzipper（重装技能运行时即可）")
     desired = Path(a.output) if a.output else files[0].resolve().parent / "加密压缩包.zip"
     out = available_output(desired, explicit=bool(a.output))
-    used_roots = set()
-
-    def unique_root(name):
-        candidate = name
-        stem, suffix = Path(name).stem, Path(name).suffix
-        number = 2
-        while unicodedata.normalize("NFC", candidate).casefold() in used_roots:
-            candidate = f"{stem}_{number}{suffix}"
-            number += 1
-        used_roots.add(unicodedata.normalize("NFC", candidate).casefold())
-        return candidate
-
     with pyzipper.AESZipFile(out, "w", compression=pyzipper.ZIP_DEFLATED,
                              encryption=pyzipper.WZ_AES) as archive:
         archive.setpassword(a.password.encode("utf-8"))
         archive.setencryption(pyzipper.WZ_AES, nbits=256)
-        for selected in files:
-            root = unique_root(selected.name)
-            if selected.is_dir():
-                children = sorted(selected.rglob("*"), key=lambda path: str(path).casefold())
-                file_children = [path for path in children if path.is_file()]
-                if not file_children:
-                    archive.writestr(root.rstrip("/") + "/", b"")
-                for path in file_children:
-                    relative = path.relative_to(selected).as_posix()
-                    archive.write(path, f"{root}/{relative}")
+        for source, arcname in _safe_zip_entries(files):
+            if source is None:
+                archive.writestr(arcname, b"")
             else:
-                archive.write(selected, root)
+                archive.write(source, arcname)
     ok(f"已加密打包 {len(files)} 项 → {out}（AES-256；需用 7-Zip、Keka 等支持 AES 的工具解压）")
 
 

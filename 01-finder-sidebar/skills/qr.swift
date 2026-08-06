@@ -1,7 +1,8 @@
 // 二维码工具：生成（CoreImage）与识别（Vision），零第三方依赖。
 // 用法:
 //   qr make <text> <out.png> [size]
-//   qr read <img> [img...]        输出: 路径\t内容（每个码一行）
+//   qr read <img> [img...]        输出: 每码一行 JSON {"path":…,"payload":…} 或 {"path":…,"error":…}
+//                                 （payload 内的换行由 JSON 转义承载，多行内容不丢失）
 import Foundation
 import CoreImage
 import Vision
@@ -42,10 +43,17 @@ case "make":
 case "read":
     guard args.count >= 2 else { fail("用法: qr read <img...>") }
     var found = 0
+    // 每码一条单行 JSON：payload 里的换行/制表符走 JSON 转义，
+    // 多行内容（vCard/MECARD/MEBKM 等）不会被行协议截断。
+    func emit(_ record: [String: String]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: record),
+              let line = String(data: data, encoding: .utf8) else { return }
+        print(line)
+    }
     for path in args.dropFirst() {
         guard let img = NSImage(contentsOfFile: path),
               let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            print("\(path)\t(无法读取图片)")
+            emit(["path": path, "error": "无法读取图片"])
             continue
         }
         let request = VNDetectBarcodesRequest()
@@ -54,12 +62,12 @@ case "read":
             try handler.perform([request])
             let codes = (request.results ?? []).compactMap { $0.payloadStringValue }
             if codes.isEmpty {
-                print("\(path)\t(未识别到二维码/条形码)")
+                emit(["path": path, "error": "未识别到二维码/条形码"])
             } else {
-                for c in codes { print("\(path)\t\(c)"); found += 1 }
+                for c in codes { emit(["path": path, "payload": c]); found += 1 }
             }
         } catch {
-            print("\(path)\t(识别失败: \(error.localizedDescription))")
+            emit(["path": path, "error": "识别失败: \(error.localizedDescription)"])
         }
     }
     if found == 0 { exit(2) }

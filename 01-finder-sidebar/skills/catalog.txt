@@ -1,11 +1,11 @@
-全局产物规则：所有技能默认保留原文件和每一次历史产物。一个最终文件放在输入文件原目录；多个最终文件统一放进版本化的 Output（已有则 Output_2、Output_3）；用户明确指定位置时按其要求。文件碰撞使用 _2、_3，即使指定 --output 也不允许静默覆盖。只有用户明确要求“覆盖原文件/原地修改”时才允许同时传 --in-place 和 --overwrite-original。删除/去重类任务绝不删除或移动原数据，必须在 Output 中构建安全副本并提示用户核对后手动删除。批量重命名默认生成副本，只有用户明确要求改原文件时才传 --overwrite-original。
+全局产物规则：所有技能默认保留原文件和每一次历史产物。一个最终文件放在输入文件原目录；多个最终文件统一放进版本化的 Output（已有则 Output_2、Output_3）；用户明确指定位置时按其要求。先落在原目录、随后要归入 Output 的产物必须移动（move）而不是复制，任务结束时原目录不得残留任何中间产物或重复副本（原文件本身除外）。文件碰撞使用 _2、_3，即使指定 --output 也不允许静默覆盖。只有用户明确要求“覆盖原文件/原地修改”时才允许同时传 --in-place 和 --overwrite-original。删除/去重类任务绝不删除或移动原数据，必须在 Output 中构建安全副本并提示用户核对后手动删除。批量重命名默认生成副本，只有用户明确要求改原文件时才传 --overwrite-original。
 rename-batch <files…> [--template 'file_{n}'|含{name}{n}{date}] [--regex X --replace Y] [--ext .jpg] [--sort name|capture-time] [--dry-run] [--overwrite-original] — 默认生成重命名副本（多文件进Output），只有用户明确要求才改原文件
 pdf-split <file.pdf> [--ranges 1-3,4-6]（省略则逐页拆分）— PDF拆分/提取页
 pdf-reorder <file.pdf> <顺序如3,1,2> [--output out.pdf] — 调整PDF页面顺序
 pdf-merge <files…> --output merged.pdf — 合并多个PDF
 pdf-compress <files…> [--in-place] — PDF无损压缩（压缩内容流+去重对象，内容页数不变；扫描件效果有限）
 pdf-crypt encrypt|decrypt <file.pdf> [--password 旧密码] [--new-password 新密码] — PDF加密/解密/移除复制打印限制
-pdf-convert --file f.pdf --to png|jpg --pages 5|1-3,7|all [--output 目录]；--file f.pdf --to txt|docx [--pages 5|1-3,7]；--file f.docx --to pdf；--to images-to-pdf --files 图片… --output out.pdf — PDF与图片/Word互转（PDF转图片必须明确页码，禁止省略后默认全量；PDF转txt强制逐页OCR，不读取文本层；docx高保真需LibreOffice，否则文字级，先提醒用户选择）
+pdf-convert --file f.pdf --to png|jpg --pages 5|1-3,7|all [--output 目录]；--file f.pdf --to txt|docx [--pages 5|1-3,7]；--file f.docx --to pdf；txt|docx|pdf 目标支持 --files 批量（多产物自动进版本化 Output）；--to images-to-pdf --files 图片… --output out.pdf — PDF与图片/Word互转（PDF转图片必须明确页码且一次一个文件；PDF转txt强制逐页OCR，不读取文本层；docx高保真需LibreOffice，否则文字级，先提醒用户选择）
 pdf-ocr <files…> [--pages 5|1-3,7] [--output out.txt] [--dpi 220] [--password 密码] — 提取/识别PDF文字时必须使用；默认直接返回指定页文字且不创建文件，只有用户明确要求保存时才传--output；中间图片仅放临时目录并自动删除；禁止另行拆分PDF或把所有页面导出成图片
 merge-docs <files…> --output out.txt|out.docx — 批量合并Word/TXT
 txt-clean <files…> [--trim] [--collapse-blank] [--strip-all-blank] [--in-place] — 清理空格空行

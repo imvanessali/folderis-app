@@ -134,6 +134,7 @@ class SafeArtifactWorkflowTests(unittest.TestCase):
         self.assertEqual({path.name: digest(path) for path in (later, earlier)}, originals)
 
     def test_qr_read_writes_single_workbook_even_when_some_images_fail(self):
+        # 旧 TAB 协议的 helper 输出仍需兼容（面对尚未更新的预编译 helper）。
         import openpyxl
         first = self.folder / "first.png"
         second = self.folder / "second.png"
@@ -150,8 +151,8 @@ class SafeArtifactWorkflowTests(unittest.TestCase):
 
         report = self.folder / "二维码识别结果.xlsx"
         rows = list(openpyxl.load_workbook(report, data_only=True).active.values)
-        self.assertEqual(rows[1], ("first.png", "https://example.test", "已识别"))
-        self.assertEqual(rows[2], ("second.png", None, "未识别到二维码/条形码"))
+        self.assertEqual(rows[1], ("first.png", "https://example.test", "已识别", None))
+        self.assertEqual(rows[2], ("second.png", None, "未识别到二维码/条形码", None))
 
     def test_precise_background_removal_preserves_sources_and_uses_output(self):
         sources = []
@@ -244,6 +245,8 @@ class SafeArtifactWorkflowTests(unittest.TestCase):
             self.assertEqual(names, ["合同.txt", "资料/附件.txt"])
             self.assertEqual(archive.read("合同.txt"), b"secret")
             self.assertTrue(all(info.flag_bits & 0x1 for info in archive.infolist()))
+            # 非 ASCII 条目名必须带 UTF-8 flag（0x800），Windows 资源管理器才不乱码。
+            self.assertTrue(all(info.flag_bits & 0x800 for info in archive.infolist()))
         self.assertTrue(all(not Path(name).is_absolute() and ".." not in Path(name).parts
                             for name in names))
         self.assertEqual({path: digest(path) for path in originals}, originals)
