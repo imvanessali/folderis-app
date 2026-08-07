@@ -52,3 +52,5 @@ win-explorer-sidebar/src/Setup/payload.zip
 
 # Wrangler local state (announce worker)
 .wrangler/
+.claude/worktrees/
+releases/
