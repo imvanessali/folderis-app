@@ -1,14 +1,14 @@
 {
   "mac": {
-    "version": "20260805.3",
+    "version": "20260807.1",
     "url": "https://folderis.app/"
   },
   "win": {
-    "version": "20260805.3",
+    "version": "20260807.1",
     "url": "https://folderis.app/"
   },
   "message": {
-    "zh": "1.1.0：常见文件操作本地秒回（不耗 AI 额度）、产物管理更安全",
-    "en": "1.1.0: instant local skills for common file tasks (no AI quota), safer output handling"
+    "zh": "1.1.0 修复版：二维码识别保留完整多行内容并新增结构化解析、PDF 批量转换修复、压缩包中文名兼容 Windows",
+    "en": "1.1.0 fix release: full multiline QR payloads with structured parsing, batch PDF convert fixes, zip Chinese filenames now open cleanly on Windows"
   }
 }
