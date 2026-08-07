@@ -6,15 +6,22 @@ reset_test_folder.sh and operates only on the refreshed writable copy.
 """
 from __future__ import annotations
 
+import os
+import sys
+
+# The harness itself may run under a signed bundle's python. Its own imports
+# (openpyxl, pyzipper, …) must not write __pycache__ into that bundle — the
+# env var in run_command only protects child skill processes.
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 import argparse
 import csv
 import json
-import os
 import re
 import shutil
 import signal
 import subprocess
-import sys
 import time
 import unicodedata
 import wave
