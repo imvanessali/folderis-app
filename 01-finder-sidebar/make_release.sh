@@ -18,7 +18,7 @@ echo "签名身份：$IDENTITY"
 RUNTIME_SRC="${RUNTIME_SRC:?需要 RUNTIME_SRC=<含 pyrt/ helpers/ ffmpeg 的目录>}"
 ARCH="${ARCH:-arm64}"   # arm64 | x86_64
 APP_VERSION="1.1.0"
-BUILD_VERSION="20260805.3"
+BUILD_VERSION="20260807.1"
 NOTARY_SCRATCH=""
 HELPER_BUILD=""
 BG_BUILD=""
@@ -160,6 +160,14 @@ xcrun swiftc -O -target x86_64-apple-macosx13.0 skills/transcribe.swift \
   -Xlinker skills/transcribe-Info.plist
 lipo -create "$HELPER_BUILD/transcribe-arm64" "$HELPER_BUILD/transcribe-x86_64" \
   -output "$RUNTIME_SRC/helpers-universal/transcribe"
+# qr 的输出协议（JSON-per-code）与 skills.py 强耦合，旧二进制会让多行
+# payload 退回截断行为，必须随 skills.py 一起重建。
+xcrun swiftc -O -target arm64-apple-macosx13.0 skills/qr.swift \
+  -o "$HELPER_BUILD/qr-arm64"
+xcrun swiftc -O -target x86_64-apple-macosx13.0 skills/qr.swift \
+  -o "$HELPER_BUILD/qr-x86_64"
+lipo -create "$HELPER_BUILD/qr-arm64" "$HELPER_BUILD/qr-x86_64" \
+  -output "$RUNTIME_SRC/helpers-universal/qr"
 rm -rf "$HELPER_BUILD"
 HELPER_BUILD=""
 
