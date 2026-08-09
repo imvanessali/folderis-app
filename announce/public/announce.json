@@ -1,14 +1,14 @@
 {
   "mac": {
-    "version": "20260807.1",
+    "version": "20260809.1",
     "url": "https://folderis.app/"
   },
   "win": {
-    "version": "20260807.1",
+    "version": "20260809.1",
     "url": "https://folderis.app/"
   },
   "message": {
-    "zh": "1.1.0 修复版：二维码识别保留完整多行内容并新增结构化解析、PDF 批量转换修复、压缩包中文名兼容 Windows",
-    "en": "1.1.0 fix release: full multiline QR payloads with structured parsing, batch PDF convert fixes, zip Chinese filenames now open cleanly on Windows"
+    "zh": "1.1.0 体验改进：HTML 报告单文件可分享、表格数字可直接计算、完成卡片显示技能说明；新增 Intel Mac 版",
+    "en": "1.1.0 polish: shareable single-file HTML reports, real numeric cells in spreadsheets, skill notes on completion cards; Intel Mac build now available"
   }
 }
