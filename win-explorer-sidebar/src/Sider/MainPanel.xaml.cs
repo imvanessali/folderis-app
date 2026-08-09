@@ -1562,7 +1562,14 @@ public partial class MainPanel : Window
                 dispatchArgs.AddRange(selectedFiles);
                 var dispatchOutput = await _skills.RunAsync(
                     "local-dispatch", dispatchArgs.ToArray(),
-                    workRoot ?? Environment.CurrentDirectory, _cts.Token);
+                    workRoot ?? Environment.CurrentDirectory, _cts.Token,
+                    stage => Dispatcher.BeginInvoke(() =>
+                    {
+                        // 匹配成功即把标签换成执行阶段，任务被停止后不再回写。
+                        if (!ReferenceEquals(_turn, turn)) return;
+                        turn.Stage = stage;
+                        UpdateStatus();
+                    }));
                 if (ParseLocalDispatch(dispatchOutput) is { } local && (bool?)local["matched"] == true)
                 {
                     turn.Stage = (string?)local["stage"] ?? L10n.T("本地处理…", "Processing locally…");

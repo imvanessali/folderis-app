@@ -148,8 +148,12 @@ public sealed class SkillRunner
             }
         });
 
+    /// <summary>local-dispatch 匹配成功后立即上报执行阶段的行前缀（与 skills.py 约定）。</summary>
+    public const string LocalStageMarker = "__FOLDERIS_LOCAL_STAGE__";
+
     public async Task<string> RunAsync(
-        string skill, string[] args, string cwd, CancellationToken ct)
+        string skill, string[] args, string cwd, CancellationToken ct,
+        Action<string>? onStage = null)
     {
         // 首用引导：运行时缺失时不直接报错，而是指导模型征求用户同意后自装。
         if (skill == "install-runtime")
@@ -189,11 +193,28 @@ public sealed class SkillRunner
         {
             try { proc.Kill(entireProcessTree: true); } catch { }
         });
-        var stdout = proc.StandardOutput.ReadToEndAsync(ct);
         var stderr = proc.StandardError.ReadToEndAsync(ct);
+        string stdout;
+        if (onStage is null)
+        {
+            stdout = await proc.StandardOutput.ReadToEndAsync(ct);
+        }
+        else
+        {
+            // 边跑边读：技能执行可能持续数分钟，stage 标记行要即时送达界面。
+            var buffered = new System.Text.StringBuilder();
+            while (await proc.StandardOutput.ReadLineAsync(ct) is { } line)
+            {
+                buffered.AppendLine(line);
+                if (!line.StartsWith(LocalStageMarker, StringComparison.Ordinal)) continue;
+                var stage = line[LocalStageMarker.Length..].Trim();
+                if (stage.Length > 0) onStage(stage);
+            }
+            stdout = buffered.ToString();
+        }
         await proc.WaitForExitAsync(ct);
 
-        var output = (await stdout) + (await stderr);
+        var output = stdout + (await stderr);
         if (output.Length <= 20_000) return output;
         if (skill == "local-dispatch")
         {

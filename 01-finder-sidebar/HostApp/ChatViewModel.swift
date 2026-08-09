@@ -442,7 +442,15 @@ final class ChatViewModel: ObservableObject {
 
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 activity = L("匹配内置技能…", "Matching a built-in skill…")
-                if let local = await Self.runLocalDispatch(request: text, files: files, cwd: taskFolder),
+                if let local = await Self.runLocalDispatch(
+                       request: text, files: files, cwd: taskFolder,
+                       onStage: { [weak self] stage in
+                           // 匹配成功即把标签换成执行阶段，任务被停止后不再回写。
+                           Task { @MainActor [weak self] in
+                               guard let self, self.isSending else { return }
+                               self.activity = stage
+                           }
+                       }),
                    local.matched {
                     activity = local.stage ?? L("本地处理…", "Processing locally…")
                     let reply: String
@@ -563,11 +571,12 @@ final class ChatViewModel: ObservableObject {
     nonisolated private static func runLocalDispatch(
         request: String,
         files: [URL],
-        cwd: URL?
+        cwd: URL?,
+        onStage: (@Sendable (String) -> Void)? = nil
     ) async -> LocalDispatchResult? {
         guard let cwd else { return nil }
         let args = ["--request", request, "--files"] + files.map(\.path)
-        let output = await runSkill(skill: "local-dispatch", args: args, cwd: cwd)
+        let output = await runSkill(skill: "local-dispatch", args: args, cwd: cwd, onStage: onStage)
         let marker = "__FOLDERIS_LOCAL_RESULT__"
         guard let range = output.range(of: marker, options: .backwards),
               let data = String(output[range.upperBound...])
@@ -2359,7 +2368,13 @@ final class ChatViewModel: ObservableObject {
         """
     }()
 
-    nonisolated private static func runSkill(skill: String, args: [String], cwd: URL) async -> String {
+    /// local-dispatch 匹配成功后立即上报执行阶段的行前缀（与 skills.py 约定）。
+    nonisolated static let localStageMarker = "__FOLDERIS_LOCAL_STAGE__"
+
+    nonisolated private static func runSkill(
+        skill: String, args: [String], cwd: URL,
+        onStage: (@Sendable (String) -> Void)? = nil
+    ) async -> String {
         let python = skillsPython
         let toolbox = supportRoot.appendingPathComponent("skills/skills.py")
         guard FileManager.default.fileExists(atPath: python.path),
@@ -2395,7 +2410,31 @@ final class ChatViewModel: ObservableObject {
                 let killer = DispatchWorkItem { if process.isRunning { process.terminate() } }
                 DispatchQueue.global().asyncAfter(deadline: .now() + 600, execute: killer)
 
-                var data = pipe.fileHandleForReading.readDataToEndOfFile()
+                var data: Data
+                if let onStage {
+                    // 边跑边读：技能执行可能持续数分钟，stage 标记行要即时
+                    // 送达界面，不能等 readDataToEndOfFile。
+                    data = Data()
+                    var lineBuffer = Data()
+                    let markerData = Data(localStageMarker.utf8)
+                    let reader = pipe.fileHandleForReading
+                    while true {
+                        let chunk = reader.availableData
+                        if chunk.isEmpty { break }
+                        data.append(chunk)
+                        lineBuffer.append(chunk)
+                        while let newline = lineBuffer.firstIndex(of: UInt8(ascii: "\n")) {
+                            let line = lineBuffer[lineBuffer.startIndex..<newline]
+                            lineBuffer = Data(lineBuffer[lineBuffer.index(after: newline)...])
+                            guard line.starts(with: markerData) else { continue }
+                            let stage = String(decoding: line.dropFirst(markerData.count), as: UTF8.self)
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !stage.isEmpty { onStage(stage) }
+                        }
+                    }
+                } else {
+                    data = pipe.fileHandleForReading.readDataToEndOfFile()
+                }
                 process.waitUntilExit()
                 killer.cancel()
 

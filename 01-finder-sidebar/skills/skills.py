@@ -8,6 +8,7 @@ stdout; non-zero exit = failure.
 """
 import argparse
 import atexit
+import contextlib
 import csv
 import hashlib
 import io
@@ -1501,6 +1502,21 @@ def cmd_img_to_ico(a):
 
 # ------------------------------------------------------------- audio/video
 
+@contextlib.contextmanager
+def _partial_output(out):
+    """在途产物写系统临时目录（folderis-<task>- 前缀），成功后才移入目标位置。
+    失败时此处清理；macOS 取消时由 local-dispatch 的 clean_partials 按前缀即时
+    清理；Windows 取消是硬杀进程树，残留由下次 local-dispatch 的陈旧清扫兜底。
+    任何 ffmpeg 类长任务都不得直写目标目录，否则会留下貌似完成的半成品。"""
+    task_id = re.sub(r"[^a-zA-Z0-9-]", "", os.environ.get("FOLDERIS_TASK_ID", "")) or uuid.uuid4().hex
+    partial = Path(tempfile.gettempdir()) / f"folderis-{task_id}-{out.name}"
+    try:
+        yield partial
+        shutil.move(str(partial), str(out))
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 def cmd_av_extract_audio(a):
     ff = ffmpeg_or_die()
     files = expand(a.files)
@@ -1509,7 +1525,8 @@ def cmd_av_extract_audio(a):
              "wav": ["-c:a", "pcm_s16le"]}[a.to]
     for f in files:
         out = available_output(f.with_suffix("." + a.to))
-        run([ff, "-y", "-i", str(f), "-vn", *codec, str(out)])
+        with _partial_output(out) as partial:
+            run([ff, "-y", "-i", str(f), "-vn", *codec, str(partial)])
         print(f"{f.name} → {out.name}")
     ok(f"已提取 {len(files)} 个音轨")
 
@@ -1520,18 +1537,13 @@ def cmd_av_trim(a):
     for f in files:
         out = Path(a.output) if (a.output and len(files) == 1) else f.with_name(f.stem + "_clip" + f.suffix)
         out = available_output(out, explicit=bool(a.output))
-        task_id = re.sub(r"[^a-zA-Z0-9-]", "", os.environ.get("FOLDERIS_TASK_ID", "")) or uuid.uuid4().hex
-        partial = Path(tempfile.gettempdir()) / f"folderis-{task_id}-{out.name}"
         cmd = [ff, "-y", "-ss", a.start]
         if a.end:
             cmd += ["-to", a.end]
         cmd += ["-i", str(f)]
         cmd += (["-c", "copy"] if a.fast else [*_stereo_downmix_args(f), *_even_video_filter_args(f)])
-        try:
+        with _partial_output(out) as partial:
             run([*cmd, str(partial)])
-            shutil.move(str(partial), str(out))
-        finally:
-            partial.unlink(missing_ok=True)
         print(f"{f.name} → {out.name}")
     ok(f"已对 {len(files)} 个文件截取 {a.start}–{a.end or '结尾'}")
 
@@ -1541,14 +1553,9 @@ def cmd_av_convert(a):
     files = expand(a.files)
     for f in files:
         out = available_output(f.with_suffix("." + a.to))
-        task_id = re.sub(r"[^a-zA-Z0-9-]", "", os.environ.get("FOLDERIS_TASK_ID", "")) or uuid.uuid4().hex
-        partial = Path(tempfile.gettempdir()) / f"folderis-{task_id}-{out.name}"
-        try:
+        with _partial_output(out) as partial:
             run([ff, "-y", "-i", str(f), *_stereo_downmix_args(f),
                  *_even_video_filter_args(f), str(partial)])
-            shutil.move(str(partial), str(out))
-        finally:
-            partial.unlink(missing_ok=True)
         print(f"{f.name} → {out.name}")
     ok(f"已转换 {len(files)} 个视频为 {a.to}")
 
@@ -1578,16 +1585,11 @@ def cmd_av_compress(a):
     files = expand(a.files)
     for f in files:
         out = available_output(f.with_name(f.stem + "_small.mp4"))
-        task_id = re.sub(r"[^a-zA-Z0-9-]", "", os.environ.get("FOLDERIS_TASK_ID", "")) or uuid.uuid4().hex
-        partial = Path(tempfile.gettempdir()) / f"folderis-{task_id}-{out.name}"
         cmd = [ff, "-y", "-i", str(f), "-c:v", "libx264", "-crf", str(a.crf), "-preset", "medium", "-c:a", "aac", "-b:a", "128k", *_stereo_downmix_args(f)]
         if a.width:
             cmd += ["-vf", f"scale={a.width}:-2"]
-        try:
+        with _partial_output(out) as partial:
             run(cmd + [str(partial)])
-            shutil.move(str(partial), str(out))
-        finally:
-            partial.unlink(missing_ok=True)
         print(f"{f.name}: {f.stat().st_size//1_000_000}MB → {out.stat().st_size//1_000_000}MB")
     ok(f"已压缩 {len(files)} 个视频（crf={a.crf}）")
 
@@ -1698,42 +1700,40 @@ def cmd_av_merge(a):
     files = expand(a.files)
     out = available_output(Path(a.output), explicit=True)
     probes = [_probe_media(f) for f in files]
-    if any(p is None for p in probes):
-        # 无 ffprobe：退回 copy 拼接，失败时重编码（无法校验时长）
-        try:
-            _av_merge_copy(ff, files, out)
-        except SystemExit:
-            lst = Path(tempfile.gettempdir()) / f"folderis-concat-{uuid.uuid4().hex}.txt"
-            lst.write_text("\n".join(f"file '{Path(f).resolve()}'" for f in files), encoding="utf-8")
+    with _partial_output(out) as partial:
+        if any(p is None for p in probes):
+            # 无 ffprobe：退回 copy 拼接，失败时重编码（无法校验时长）
             try:
-                run([ff, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-                     "-c:v", "libx264", "-c:a", "aac", str(out)])
-            finally:
-                lst.unlink(missing_ok=True)
-        ok(f"已合并 {len(files)} 段 → {out}")
-        return
-
-    durations = [p[0] for p in probes]
-    expected = sum(durations) if all(d is not None for d in durations) else None
-    uniform = len({_merge_signature(p) for p in probes}) == 1
-    merged = False
-    if uniform:
-        try:
-            _av_merge_copy(ff, files, out)
-            merged = _merge_duration_ok(out, expected)
-        except SystemExit:
+                _av_merge_copy(ff, files, partial)
+            except SystemExit:
+                lst = Path(tempfile.gettempdir()) / f"folderis-concat-{uuid.uuid4().hex}.txt"
+                lst.write_text("\n".join(f"file '{Path(f).resolve()}'" for f in files), encoding="utf-8")
+                try:
+                    run([ff, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                         "-c:v", "libx264", "-c:a", "aac", str(partial)])
+                finally:
+                    lst.unlink(missing_ok=True)
+        else:
+            durations = [p[0] for p in probes]
+            expected = sum(durations) if all(d is not None for d in durations) else None
+            uniform = len({_merge_signature(p) for p in probes}) == 1
             merged = False
-        if not merged:
-            out.unlink(missing_ok=True)
-    if not merged:
-        # 编码/帧率/时基不一致（或 copy 拼接时长不对）：重编码拼接
-        _av_merge_reencode(ff, files, probes, out)
-        if not _merge_duration_ok(out, expected):
-            actual = _probe_media(out)[0]
-            out.unlink(missing_ok=True)
-            die(f"合并结果时长 {actual:.3f}s 与输入总时长 {expected:.3f}s 不符，已中止并删除产物")
-    if all(p[1] for p in probes) and not all(p[2] for p in probes) and any(p[2] for p in probes):
-        print("提示：部分片段没有音轨，合并结果不含音频")
+            if uniform:
+                try:
+                    _av_merge_copy(ff, files, partial)
+                    merged = _merge_duration_ok(partial, expected)
+                except SystemExit:
+                    merged = False
+                if not merged:
+                    partial.unlink(missing_ok=True)
+            if not merged:
+                # 编码/帧率/时基不一致（或 copy 拼接时长不对）：重编码拼接
+                _av_merge_reencode(ff, files, probes, partial)
+                if not _merge_duration_ok(partial, expected):
+                    actual = _probe_media(partial)[0]
+                    die(f"合并结果时长 {actual:.3f}s 与输入总时长 {expected:.3f}s 不符，已中止并删除产物")
+            if all(p[1] for p in probes) and not all(p[2] for p in probes) and any(p[2] for p in probes):
+                print("提示：部分片段没有音轨，合并结果不含音频")
     ok(f"已合并 {len(files)} 段 → {out}")
 
 
@@ -1750,7 +1750,8 @@ def cmd_audio_convert(a):
     files = expand(a.files)
     for f in files:
         out = available_output(f.with_suffix("." + a.to))
-        run([ff, "-y", "-i", str(f), *_stereo_downmix_args(f), str(out)])
+        with _partial_output(out) as partial:
+            run([ff, "-y", "-i", str(f), *_stereo_downmix_args(f), str(partial)])
         print(f"{f.name} → {out.name}")
     ok(f"已转换 {len(files)} 个音频为 {a.to}")
 
@@ -1761,7 +1762,8 @@ def cmd_audio_denoise(a):
     for f in files:
         out = Path(a.output) if (a.output and len(files) == 1) else f.with_name(f.stem + "_denoised" + f.suffix)
         out = available_output(out, explicit=bool(a.output))
-        run([ff, "-y", "-i", str(f), "-af", f"afftdn=nr={a.strength}", str(out)])
+        with _partial_output(out) as partial:
+            run([ff, "-y", "-i", str(f), "-af", f"afftdn=nr={a.strength}", str(partial)])
         print(f"{f.name} → {out.name}")
     ok(f"已降噪 {len(files)} 个文件（如需人声/伴奏分离需另装 demucs，向用户说明）")
 
@@ -1787,18 +1789,13 @@ def cmd_av_gif(a):
             suffix = "_" + "_".join(parts) if parts else ""
             out = f.with_name(f.stem + suffix + ".gif")
         out = available_output(out, explicit=bool(a.output))
-        task_id = re.sub(r"[^a-zA-Z0-9-]", "", os.environ.get("FOLDERIS_TASK_ID", "")) or uuid.uuid4().hex
-        partial = Path(tempfile.gettempdir()) / f"folderis-{task_id}-{out.name}"
         cmd = [ff, "-y"]
         if a.start:
             cmd += ["-ss", a.start]
         if a.duration:
             cmd += ["-t", str(a.duration)]
-        try:
+        with _partial_output(out) as partial:
             run(cmd + ["-i", str(f), "-vf", filt, str(partial)])
-            shutil.move(str(partial), str(out))
-        finally:
-            partial.unlink(missing_ok=True)
         print(f"{f.name} → {out.name}（{out.stat().st_size//1024}KB）")
     ok(f"已生成 {len(files)} 个 GIF")
 
@@ -1819,11 +1816,12 @@ def cmd_av_subtitles(a):
                 continue
         out = Path(a.output) if (a.output and len(files) == 1) else f.with_name(f.stem + "_subbed.mp4")
         out = available_output(out, explicit=bool(a.output))
-        if a.soft:
-            run([ff, "-y", "-i", str(f), "-i", str(sub), "-c", "copy", "-c:s", "mov_text", str(out)])
-        else:
-            sub_escaped = str(sub).replace("'", r"\'").replace(":", r"\:")
-            run([ff, "-y", "-i", str(f), "-vf", f"subtitles='{sub_escaped}'", "-c:a", "copy", str(out)])
+        with _partial_output(out) as partial:
+            if a.soft:
+                run([ff, "-y", "-i", str(f), "-i", str(sub), "-c", "copy", "-c:s", "mov_text", str(partial)])
+            else:
+                sub_escaped = str(sub).replace("'", r"\'").replace(":", r"\:")
+                run([ff, "-y", "-i", str(f), "-vf", f"subtitles='{sub_escaped}'", "-c:a", "copy", str(partial)])
         print(f"{f.name} + {sub.name} → {out.name}")
         done += 1
     ok(f"已处理 {done} 个视频的字幕（{'软封装' if a.soft else '烧录'}）")
@@ -4538,6 +4536,18 @@ def cmd_local_dispatch(a):
         print(marker + json.dumps({"matched": False}, ensure_ascii=False))
         return
 
+    # 匹配即上报 stage（宿主流式读取后切换活动标签），必须抢在目录扫描与
+    # 技能执行之前——大文件夹/大文件任务会在下面耗几分钟。
+    print("__FOLDERIS_LOCAL_STAGE__" + plan["stage"], flush=True)
+    # Windows 取消是硬杀进程树，本任务的 clean_partials 没机会执行；这里
+    # 兜底清掉上次强杀遗留的陈旧在途产物（>1 天，绝不会碰并发任务的）。
+    cutoff = datetime.now().timestamp() - 86400
+    for stale in Path(tempfile.gettempdir()).glob("folderis-*"):
+        try:
+            if stale.is_file() and stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            pass
     roots = {Path(p).resolve().parent for p in a.files} or {Path.cwd().resolve()}
     before = {str(p.resolve()) for root in roots for p in root.rglob("*") if p.is_file()}
     started = datetime.now()
