@@ -44,7 +44,8 @@ final class CLIEnvironmentTests: XCTestCase {
 
     func testBackendPromptsDoNotDuplicateSharedArtifactPolicy() {
         // 共享政策唯一来源是 catalog；后端提示词只允许保留指针。
-        for fragment in ["版本化的 Output（已", "构建安全副本并提示用户核对"] {
+        for fragment in ["版本化的 Output（已", "构建安全副本并提示用户核对",
+                         "以 data URI 内嵌", "按对应的数值/日期类型写入"] {
             XCTAssertFalse(ChatViewModel.cliScopePolicyForTesting.contains(fragment),
                            "cliScopePolicy 不得内嵌共享政策正文：\(fragment)")
         }

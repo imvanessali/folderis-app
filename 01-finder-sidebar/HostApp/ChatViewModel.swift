@@ -447,12 +447,11 @@ final class ChatViewModel: ObservableObject {
                     activity = local.stage ?? L("本地处理…", "Processing locally…")
                     let reply: String
                     if local.success == true, let outputs = local.outputs, !outputs.isEmpty {
-                        let skill = local.skill ?? "local"
-                        let elapsed = String(format: "%.2f", local.elapsed ?? 0)
-                        let paths = outputs.joined(separator: "\n")
-                        reply = L(
-                            "已通过内置技能完成，没有调用 AI，也没有覆盖原文件。\n技能：\(skill) · \(elapsed) 秒\n结果文件：\n\(paths)",
-                            "Completed with a built-in skill without calling AI or overwriting the originals.\nSkill: \(skill) · \(elapsed)s\nOutput:\n\(paths)"
+                        reply = Self.localSkillCompletionReply(
+                            skill: local.skill ?? "local",
+                            elapsed: local.elapsed ?? 0,
+                            outputs: outputs,
+                            details: local.details
                         )
                     } else if local.success == true,
                               let detail = local.details?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -537,6 +536,28 @@ final class ChatViewModel: ObservableObject {
         let outputs: [String]?
         let details: String?
         let elapsed: Double?
+    }
+
+    /// B8（20260805.3 case61）：完成卡片必须透出技能自身的完成文案（ok() 输出，
+    /// 例如 zip-encrypt 的「AES-256；需用 7-Zip、Keka 等支持 AES 的工具解压」）。
+    /// details 已由 local-dispatch 截到末尾 2000 字符，这里全文展示不再截断。
+    nonisolated static func localSkillCompletionReply(
+        skill: String,
+        elapsed: Double,
+        outputs: [String],
+        details: String?
+    ) -> String {
+        let elapsedText = String(format: "%.2f", elapsed)
+        let paths = outputs.joined(separator: "\n")
+        var reply = L(
+            "已通过内置技能完成，没有调用 AI，也没有覆盖原文件。\n技能：\(skill) · \(elapsedText) 秒\n结果文件：\n\(paths)",
+            "Completed with a built-in skill without calling AI or overwriting the originals.\nSkill: \(skill) · \(elapsedText)s\nOutput:\n\(paths)"
+        )
+        let notes = (details ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !notes.isEmpty {
+            reply += L("\n技能说明：\n\(notes)", "\nSkill notes:\n\(notes)")
+        }
+        return reply
     }
 
     nonisolated private static func runLocalDispatch(

@@ -1575,15 +1575,16 @@ public partial class MainPanel : Window
                     string reply;
                     if ((bool?)local["success"] == true && outputs.Length > 0)
                     {
-                        var skill = (string?)local["skill"] ?? "local";
-                        var elapsed = (double?)local["elapsed"] ?? 0;
                         var paths = (local["outputs"] as JsonArray)?
                             .Select(n => (string?)n)
                             .Where(p => !string.IsNullOrWhiteSpace(p))
+                            .Select(p => p!)
                             .ToArray() ?? [];
-                        reply = L10n.T(
-                            $"已通过内置技能完成，没有调用 AI，也没有覆盖原文件。\n技能：{skill} · {elapsed:F2} 秒\n结果文件：\n{string.Join("\n", paths)}",
-                            $"Completed with a built-in skill without calling AI or overwriting the originals.\nSkill: {skill} · {elapsed:F2}s\nOutput:\n{string.Join("\n", paths)}");
+                        reply = BuildLocalSkillReply(
+                            (string?)local["skill"] ?? "local",
+                            (double?)local["elapsed"] ?? 0,
+                            paths,
+                            (string?)local["details"]);
                     }
                     else if ((bool?)local["success"] == true
                              && ((string?)local["details"])?.Trim() is { Length: > 0 } info)
@@ -1724,6 +1725,21 @@ public partial class MainPanel : Window
             SetSending(false);
             if (ReferenceEquals(conv, _conv)) ChatScroll.ScrollToBottom();
         }
+    }
+
+    /// <summary>B8（20260805.3 case61）：完成卡片必须透出技能自身的完成文案（ok() 输出，
+    /// 例如 zip-encrypt 的「AES-256；需用 7-Zip 等支持 AES 的工具解压」）。
+    /// details 已由 local-dispatch 截到末尾 2000 字符，这里全文展示不再截断（与 macOS 对齐）。</summary>
+    internal static string BuildLocalSkillReply(
+        string skill, double elapsed, string[] paths, string? details)
+    {
+        var reply = L10n.T(
+            $"已通过内置技能完成，没有调用 AI，也没有覆盖原文件。\n技能：{skill} · {elapsed:F2} 秒\n结果文件：\n{string.Join("\n", paths)}",
+            $"Completed with a built-in skill without calling AI or overwriting the originals.\nSkill: {skill} · {elapsed:F2}s\nOutput:\n{string.Join("\n", paths)}");
+        var notes = details?.Trim();
+        if (!string.IsNullOrEmpty(notes))
+            reply += L10n.T($"\n技能说明：\n{notes}", $"\nSkill notes:\n{notes}");
+        return reply;
     }
 
     private static JsonObject? ParseLocalDispatch(string output)

@@ -20,6 +20,9 @@ MARKER = "全局产物规则："
 POLICY_FRAGMENTS = [
     "版本化的 Output（已",
     "构建安全副本并提示用户核对后手动删除",
+    # B6/B7（20260805.3 §9）：HTML 自包含与表格列类型同属政策正文，禁止抄回源码。
+    "以 data URI 内嵌",
+    "按对应的数值/日期类型写入",
 ]
 
 
@@ -34,6 +37,12 @@ class PolicySingleSourceTests(unittest.TestCase):
         # A3（20260805.3 case23/28/55）：归置进 Output 必须是移动，根目录零残留。
         for term in ["移动（move）", "不得残留"]:
             self.assertIn(term, policy, f"政策段缺少归置语义：{term}")
+        # B6（20260805.3 case53）：HTML 汇报默认自包含，无法内嵌时必须明示同目录依赖。
+        for term in ["data URI", "同一目录"]:
+            self.assertIn(term, policy, f"政策段缺少 HTML 自包含语义：{term}")
+        # B7（20260805.3 case9）：表格数字/金额/日期列写对应类型，不写文本。
+        for term in ["数值/日期类型", "不得写成文本"]:
+            self.assertIn(term, policy, f"政策段缺少表格列类型语义：{term}")
 
     def test_backend_prompts_keep_only_pointers(self):
         for src in (MAC_VM, WIN_PANEL):
