@@ -8,7 +8,7 @@
     <Version>1.1.0</Version>
     <AssemblyVersion>1.1.0.0</AssemblyVersion>
     <FileVersion>1.1.0.0</FileVersion>
-    <InformationalVersion>1.1.0+20260809.2</InformationalVersion>
+    <InformationalVersion>1.1.0+20260810.1</InformationalVersion>
     <!-- The setup is deliberately untrimmed: startup reliability matters more
          than a few MB, and failures must reach Main so the native log/dialog works. -->
     <PublishTrimmed>false</PublishTrimmed>
