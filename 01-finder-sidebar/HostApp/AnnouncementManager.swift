@@ -146,6 +146,8 @@ struct AnnouncementBanner: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color.accentColor.opacity(0.08))
+        // 浅黄底：公告要一眼可见，强调色淡蓝底和面板底色太接近。
+        // 用系统 yellow 加低透明度，深色模式下自动变成暗琥珀色调。
+        .background(Color.yellow.opacity(0.18))
     }
 }

@@ -73,8 +73,9 @@
             </DockPanel>
 
             <!-- 版本公告横幅：温和提示，不抢焦点、不弹窗；AI 忙碌时挂起不显示 -->
+            <!-- 浅黄底：公告要一眼可见，浅蓝底和面板底色太接近（与 macOS 对齐） -->
             <Border x:Name="UpdateBanner" DockPanel.Dock="Top" Visibility="Collapsed"
-                    Background="#EAF3FF" BorderBrush="#B9D7F7" BorderThickness="1"
+                    Background="#FFF7D6" BorderBrush="#EDDBA0" BorderThickness="1"
                     CornerRadius="6" Padding="10,7" Margin="0,0,0,6">
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
