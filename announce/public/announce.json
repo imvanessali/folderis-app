@@ -1,6 +1,6 @@
 {
   "mac": {
-    "version": "20260809.2",
+    "version": "20260810.1",
     "url": "https://folderis.app/"
   },
   "win": {
@@ -8,7 +8,7 @@
     "url": "https://folderis.app/"
   },
   "message": {
-    "zh": "1.1.0 修复版：本地技能执行实时显示进度阶段，不再停在「匹配内置技能」误像卡住；取消或失败的音视频任务不再留下半成品文件",
-    "en": "1.1.0 fix release: built-in skills now show live progress stages (no more sitting on \"matching a skill\"), and cancelled or failed media tasks no longer leave partial files behind"
+    "zh": "1.1.0 体验改进：新版本提醒更及时（打开面板即检查，无需重启），公告横幅改为醒目的浅黄色",
+    "en": "1.1.0 polish: update notices now appear as soon as you open the panel (no relaunch needed), with a more visible pale-yellow banner"
   }
 }
