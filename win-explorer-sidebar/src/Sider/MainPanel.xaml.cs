@@ -110,6 +110,12 @@ public partial class MainPanel : Window
         UpdateLaterButton.Content = L10n.T("稍后", "Later");
         _announce.StateChanged += () => Dispatcher.BeginInvoke(RefreshUpdateBanner);
         _announce.Start();
+        // 面板（展开态）真正上屏的时刻：节流补查版本公告，让活跃用户
+        // 不必等 24h 轮询或重启就能看到横幅（与 macOS 端对齐）。
+        IsVisibleChanged += (_, e) =>
+        {
+            if (e.NewValue is true && !_docker.IsCollapsed) _announce.CheckIfStale();
+        };
     }
 
     /// <summary>
@@ -1037,6 +1043,7 @@ public partial class MainPanel : Window
     {
         ExpandedRoot.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         CollapsedRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        if (!collapsed) _announce.CheckIfStale();
     }
 
     public void ToggleCollapsed()

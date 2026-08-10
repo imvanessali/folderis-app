@@ -23,18 +23,38 @@ final class AnnouncementManager: ObservableObject {
     private static let dismissedKey = "announceDismissedVersion"
     private static let startupDelay: UInt64 = 20 * 1_000_000_000
     private static let checkInterval: UInt64 = 24 * 3600 * 1_000_000_000
+    /// 面板唤起补查的节流窗口：请求本身极廉价（静态 JSON），节流只为
+    /// 不随 reposition 高频触发。
+    private static let staleAfter: TimeInterval = 3600
 
     private var loop: Task<Void, Never>?
+    private var lastCheckAt: Date?
 
     func start() {
         guard loop == nil else { return }
         loop = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.startupDelay)
             while !Task.isCancelled {
-                await self?.checkOnce()
+                // 循环同样尊重节流窗：面板唤起若刚补查过（如启动 20s 内
+                // 面板已上屏），这一轮直接跳过，避免启动期双请求。
+                await self?.checkOnceIfStale()
                 try? await Task.sleep(nanoseconds: Self.checkInterval)
             }
         }
+    }
+
+    /// 面板唤起时的节流补查：用户真正看面板的时刻才是展示公告的时机，
+    /// 24 小时定时器只是兜底。距上次检查不足 1 小时直接跳过。
+    func checkIfStale() {
+        guard loop != nil else { return }  // start() 之前无操作（与 Windows 对齐）
+        guard Date().timeIntervalSince(lastCheckAt ?? .distantPast) >= Self.staleAfter else { return }
+        lastCheckAt = Date()
+        Task { [weak self] in await self?.checkOnce() }
+    }
+
+    private func checkOnceIfStale() async {
+        guard Date().timeIntervalSince(lastCheckAt ?? .distantPast) >= Self.staleAfter else { return }
+        await checkOnce()
     }
 
     func openDownloadPage() {
@@ -50,6 +70,7 @@ final class AnnouncementManager: ObservableObject {
     }
 
     private func checkOnce() async {
+        lastCheckAt = Date()
         let feed = ProcessInfo.processInfo.environment["FOLDERIS_ANNOUNCE_URL"]
             ?? Self.defaultFeed
         guard let url = URL(string: feed) else { return }

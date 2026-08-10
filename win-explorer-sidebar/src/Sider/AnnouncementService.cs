@@ -18,10 +18,14 @@ public sealed class AnnouncementService
 
     private static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(24);
+    /// <summary>面板唤起补查的节流窗口：请求本身极廉价（静态 JSON），节流只为不随高频 UI 事件触发。</summary>
+    private static readonly TimeSpan StaleAfter = TimeSpan.FromHours(1);
 
     private readonly object _logLock = new();
     private System.Threading.SynchronizationContext? _ui;
     private bool _started;
+    private HttpClient? _http;
+    private DateTime _lastCheckAt;
 
     /// <summary>公告状态变化（已切回 UI 线程）。</summary>
     public event Action? StateChanged;
@@ -42,7 +46,18 @@ public sealed class AnnouncementService
         if (_started) return;
         _started = true;
         _ui = System.Threading.SynchronizationContext.Current;
+        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         _ = RunLoopAsync();
+    }
+
+    /// <summary>面板唤起时的节流补查：用户真正看面板的时刻才是展示公告的时机，
+    /// 24 小时循环只是兜底。距上次检查不足 1 小时直接跳过。UI 线程调用。</summary>
+    public void CheckIfStale()
+    {
+        if (!_started || _http is not { } http) return;
+        if (DateTime.UtcNow - _lastCheckAt < StaleAfter) return;
+        _lastCheckAt = DateTime.UtcNow;
+        _ = CheckOnceAsync(http);
     }
 
     /// <summary>用户点「前往下载」：用默认浏览器打开发布页。</summary>
@@ -72,10 +87,12 @@ public sealed class AnnouncementService
         try
         {
             await Task.Delay(StartupDelay);
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             while (true)
             {
-                await CheckOnceAsync(http);
+                // 循环同样尊重节流窗：面板唤起若刚补查过（如启动 20s 内
+                // 面板已可见），这一轮直接跳过，避免启动期双请求。
+                if (_http is { } http && DateTime.UtcNow - _lastCheckAt >= StaleAfter)
+                    await CheckOnceAsync(http);
                 await Task.Delay(CheckInterval);
             }
         }
@@ -87,6 +104,7 @@ public sealed class AnnouncementService
 
     private async Task CheckOnceAsync(HttpClient http)
     {
+        _lastCheckAt = DateTime.UtcNow;
         try
         {
             var feed = Environment.GetEnvironmentVariable("FOLDERIS_ANNOUNCE_URL")

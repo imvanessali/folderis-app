@@ -231,6 +231,7 @@ final class FloatingPanelController: NSObject {
                 active.setFrame(parked, display: true)
             }
             orderDirectlyAboveFinder(active)
+            if !isCollapsed { AnnouncementManager.shared.checkIfStale() }
             return
         }
 
@@ -270,6 +271,9 @@ final class FloatingPanelController: NSObject {
         )
         active.setFrame(panelFrame, display: true)
         orderDirectlyAboveFinder(active)
+        // 面板（展开态）真正上屏的时刻：节流补查版本公告，让活跃用户
+        // 不必等 24h 轮询或重启就能看到横幅。
+        if !isCollapsed { AnnouncementManager.shared.checkIfStale() }
     }
 
     /// Keep our normal-level window paired with the Finder window it is
