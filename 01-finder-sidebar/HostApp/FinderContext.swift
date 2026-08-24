@@ -34,17 +34,55 @@ final class FinderContext: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.poll()
         }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(activeAppChanged),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
         poll()
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    @objc private func activeAppChanged() {
+        poll()
+    }
+
+    /// The non-activating panel can still make this app frontmost when the user
+    /// opens it or focuses the prompt. Keep reading the last Finder window in
+    /// that state so a selection made immediately before opening the panel is
+    /// not lost before the next poll.
+    static func shouldPoll(
+        frontmostBundleIdentifier: String?,
+        ownBundleIdentifier: String?
+    ) -> Bool {
+        if frontmostBundleIdentifier == "com.apple.finder" { return true }
+        guard let ownBundleIdentifier else { return false }
+        return frontmostBundleIdentifier == ownBundleIdentifier
+    }
+
+    static func isAutomationDeniedError(_ errorText: String) -> Bool {
+        let normalized = errorText.lowercased()
+        return normalized.contains("-1743")
+            || normalized.contains("-10004")
+            || normalized.contains("not authorized")
+            || normalized.contains("not permitted")
+            || normalized.contains("privilege violation")
     }
 
     private func poll() {
-        // Only bother Finder when it's frontmost; otherwise keep last context.
-        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.finder" else { return }
+        // Keep polling while either Finder or this panel is frontmost. Opening
+        // the panel can activate Folderis before the one-second timer observes
+        // a just-made Finder selection.
+        guard Self.shouldPoll(
+            frontmostBundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            ownBundleIdentifier: Bundle.main.bundleIdentifier
+        ) else { return }
         guard !polling else { return }
         polling = true
 
@@ -68,8 +106,9 @@ final class FinderContext: ObservableObject {
 
             let errText = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             if process.terminationStatus != 0 {
-                // -1743: user declined the automation permission prompt.
-                let denied = errText.contains("-1743")
+                // macOS has used both Apple Event authorization and privilege
+                // errors for a denied Automation grant across system versions.
+                let denied = Self.isAutomationDeniedError(errText)
                 DispatchQueue.main.async { self?.automationDenied = denied }
                 return
             }

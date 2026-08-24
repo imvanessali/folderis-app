@@ -2,6 +2,6 @@
 // 改 public/announce.json 后跑根目录 publish_notice.sh(或此目录 wrangler deploy)即生效。
 {
   "name": "folderis-announce",
-  "compatibility_date": "2026-07-01",
+  "compatibility_date": "2026-08-24",
   "assets": { "directory": "./public" }
 }

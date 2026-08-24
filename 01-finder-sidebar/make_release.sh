@@ -17,8 +17,8 @@ IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Applica
 echo "签名身份：$IDENTITY"
 RUNTIME_SRC="${RUNTIME_SRC:?需要 RUNTIME_SRC=<含 pyrt/ helpers/ ffmpeg 的目录>}"
 ARCH="${ARCH:-arm64}"   # arm64 | x86_64
-APP_VERSION="1.1.0"
-BUILD_VERSION="20260810.1"
+APP_VERSION="1.1.1"
+BUILD_VERSION="20260824.1"
 NOTARY_SCRATCH=""
 HELPER_BUILD=""
 BG_BUILD=""

@@ -1,6 +1,6 @@
 {
   "mac": {
-    "version": "20260810.1",
+    "version": "20260824.1",
     "url": "https://folderis.app/"
   },
   "win": {
@@ -8,7 +8,7 @@
     "url": "https://folderis.app/"
   },
   "message": {
-    "zh": "1.1.0 体验改进：新版本提醒更及时（打开面板即检查，无需重启），公告横幅改为醒目的浅黄色",
-    "en": "1.1.0 polish: update notices now appear as soon as you open the panel (no relaunch needed), with a more visible pale-yellow banner"
+    "zh": "1.1.1 修复：在另一台 Mac 或刚授权权限后，Folderis 现在能立即感知访达中选中的文件和文件夹",
+    "en": "1.1.1 fix: Folderis now detects selected Finder files and folders immediately on a new Mac or after permissions are granted"
   }
 }

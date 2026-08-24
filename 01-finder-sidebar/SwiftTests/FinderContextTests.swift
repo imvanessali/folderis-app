@@ -49,4 +49,41 @@ final class FinderContextTests: XCTestCase {
             binding
         )
     }
+
+    func testPollsWhenFinderIsFrontmost() {
+        XCTAssertTrue(FinderContext.shouldPoll(
+            frontmostBundleIdentifier: "com.apple.finder",
+            ownBundleIdentifier: "app.folderis"
+        ))
+    }
+
+    func testPollsWhenFolderisIsFrontmost() {
+        XCTAssertTrue(FinderContext.shouldPoll(
+            frontmostBundleIdentifier: "app.folderis",
+            ownBundleIdentifier: "app.folderis"
+        ))
+    }
+
+    func testDoesNotPollOtherApplications() {
+        XCTAssertFalse(FinderContext.shouldPoll(
+            frontmostBundleIdentifier: "com.apple.TextEdit",
+            ownBundleIdentifier: "app.folderis"
+        ))
+        XCTAssertFalse(FinderContext.shouldPoll(
+            frontmostBundleIdentifier: nil,
+            ownBundleIdentifier: nil
+        ))
+    }
+
+    func testRecognizesAutomationDenialErrorsAcrossSystemVersions() {
+        XCTAssertTrue(FinderContext.isAutomationDeniedError(
+            "Not authorized to send Apple events to Finder. (-1743)"
+        ))
+        XCTAssertTrue(FinderContext.isAutomationDeniedError(
+            "A privilege violation occurred. (-10004)"
+        ))
+        XCTAssertFalse(FinderContext.isAutomationDeniedError(
+            "Finder got an error: Connection is invalid. (-609)"
+        ))
+    }
 }

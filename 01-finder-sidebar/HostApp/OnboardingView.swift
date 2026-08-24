@@ -7,6 +7,13 @@ import ApplicationServices
 enum Onboarding {
     static let completedKey = "onboardingCompleted.v1"
 
+    static func permissionsReady(
+        accessibilityGranted: Bool,
+        automationGranted: Bool?
+    ) -> Bool {
+        accessibilityGranted && automationGranted == true
+    }
+
     static var needed: Bool {
         !UserDefaults.standard.bool(forKey: completedKey)
     }
@@ -405,6 +412,11 @@ struct OnboardingView: View {
         switch step {
         case .brain: return brainChoice == nil
         case .deepSeekKey: return deepSeekKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .permissions:
+            return !Onboarding.permissionsReady(
+                accessibilityGranted: axGranted,
+                automationGranted: automationGranted
+            )
         default: return false
         }
     }
